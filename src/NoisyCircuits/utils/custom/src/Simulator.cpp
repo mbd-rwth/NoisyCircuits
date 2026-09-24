@@ -11,6 +11,7 @@
 #include "TypeDefs.hpp"
 #include "NoiseParser.hpp"
 #include "QuantumGates.hpp"
+#include "NoiseApplication.hpp"
 #include "FunctionMapper.hpp"
 
 /**

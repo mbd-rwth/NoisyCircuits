@@ -11,6 +11,7 @@
 #pragma once
 #include "TypeDefs.hpp"
 #include "QuantumGates.hpp"
+#include "NoiseApplication.hpp"
 
 /*
  * Function that maps the gate name to the function that applies the gate to the state
