@@ -52,8 +52,6 @@ class QuantumCircuit:
         A dictionary containing the raw noise model for the quantum circuit.
     backend_qpu_type : str
         The QPU architecture to use. Supported options are eagle and heron. (Defaults to heron)
-    basis_gates : list[list[str]]
-        A list of list of basis gates given in the format [[single qubit gates], [two qubit gates]]. (Defaults to the basis gates of the Heron QPU)
     use_fractional : bool
         A flag to determine whether to use fractional gates or not. Applicable to QPUs which allow fractional gates (Defaults to True)
     sim_backend : str
@@ -266,7 +264,7 @@ class QuantumCircuit:
         Raises
         ------
         ValueError
-            If any gates used in the quantum circuit are not supported by the noise model.k
+            If any gates used in the quantum circuit are not supported by the noise model.
         """
         single_qubit_gates_in_model = self.single_qubit_error[0].keys()
         two_qubit_gates_in_model = self.two_qubit_error.keys()
