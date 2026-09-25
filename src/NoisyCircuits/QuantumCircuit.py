@@ -27,7 +27,7 @@ from NoisyCircuits.utils.EagleDecomposition import EagleDecomposition
 from NoisyCircuits.utils.HeronDecomposition import HeronDecomposition
 from NoisyCircuits.utils import Parser
 from NoisyCircuits.utils.solvers import load_solver
-from NoisyCircuits.utils import compute_marginal_probs, convert_matrix_to_little_endian
+from NoisyCircuits.utils import compute_marginal_probs, convert_matrix_to_little_endian, basis_gate_set
 import measurement_error_applicator
 import ray
 import gc
@@ -84,17 +84,6 @@ class QuantumCircuit:
     -----
     - For using a different backend QPU, write in the basis gate set of the QPU in the arguement and leave the `backend_qpu_type` empty to let it default to "heron" but the customized basis gate set is given priority.
     """
-    # Update QPU Basis Gates Here!
-    basis_gates_set = {
-        'eagle': {
-                    "basis_gates" : [['rz', 'sx', 'x'], ['ecr']],
-                    "gate_decomposition" : EagleDecomposition
-                },
-        'heron': {
-                    "basis_gates" : [['rz', 'rx', 'sx', 'x'], ['cz', 'rzz']],
-                    "gate_decomposition" : HeronDecomposition
-                }
-    }
     available_sim_backends = ["custom", "pennylane", "qiskit", "qulacs"]
 
     def __init__(
@@ -102,7 +91,6 @@ class QuantumCircuit:
                 num_qubits:int,
                 noise_model:dict,
                 backend_qpu_type:str="heron",
-                basis_gates:list[list[str]]=[['rz', 'rx', 'sx', 'x'], ['cz', 'rzz']],
                 use_fractional:bool=True,
                 sim_backend:str="custom",
                 threshold:float=1e-12,
@@ -120,7 +108,7 @@ class QuantumCircuit:
         if not isinstance(backend_qpu_type, str):
             raise TypeError("backend_qpu_type must be a string.")
         if backend_qpu_type.lower() not in QuantumCircuit.basis_gates_set:
-            raise ValueError(f"backend_qpu_type must be one of {list(QuantumCircuit.basis_gates_set.keys())}.")
+            raise ValueError(f"backend_qpu_type must be one of {list(basis_gate_set.keys())}.")
         if not isinstance(sim_backend, str):
             raise TypeError("sim_backend must be a string.")
         if sim_backend.lower() not in QuantumCircuit.available_sim_backends:
@@ -133,10 +121,6 @@ class QuantumCircuit:
             raise TypeError("verbose must be a boolean.")
         if not isinstance(use_fractional, bool):
             raise TypeError("use_fractional must be a boolean.")
-        if not isinstance(basis_gates, list) or any(not isinstance(gate_set, list) for gate_set in basis_gates):
-            raise TypeError("basis_gates must be a list of list of strings. For example, the default value for basis_gates is defined as {}".format(QuantumCircuit.basis_gates_set["heron"]["basis_gates"]))
-        if not any(any(isinstance(gate, str) for gate in gate_set) for gate_set in basis_gates):
-            raise TypeError("basis_gates must be a list of list of strings. For example, the default value for basis_gates is defined as {}".format(QuantumCircuit.basis_gates_set["heron"]["basis_gates"]))
         self.num_qubits = num_qubits
         self.qpu = backend_qpu_type.lower()
         self.threshold = threshold
@@ -144,7 +128,7 @@ class QuantumCircuit:
         self._sim_backend = None
         self.solver = None
         self.sim_backend = sim_backend.lower()
-        self._basis_gates = basis_gates if self.qpu == "heron" else QuantumCircuit.basis_gates_set[self.qpu]["basis_gates"]
+        self._basis_gates = basis_gate_set[self.qpu]["basis_gates"]
         self.basis_gates = self._basis_gates
         modeller = BuildModel(
             noise_model = noise_model,
@@ -169,16 +153,16 @@ class QuantumCircuit:
         self.measurement_error = measurement_error
         self.measurement_error_operator = None
         self.connectivity = connectivity
-        if self.basis_gates == QuantumCircuit.basis_gates_set[self.qpu]["basis_gates"]:
-            self._gate_decomposer = QuantumCircuit.basis_gates_set[self.qpu]["gate_decomposition"](
+        if basis_gate_set[self.qpu]["gate_decomposition"] is not None:
+            self._gate_decomposer = basis_gate_set[self.qpu]["gate_decomposition"](
                 num_qubits = self.num_qubits,
                 connectivity = self.connectivity,
                 qubit_map = modeller.qubit_coupling_map,
                 use_fractional = use_fractional
             )
         else:
-            print("Warning: A decomposition for the given basis gates does not exist. In-built circuit building methods are not available. Please use the OpenQasm Parser to generate the circuit.")
             self._gate_decomposer = None
+            warnings.warn("A decomposition for the given QPU does not exist and therefore, circuit building is not possible. Please import your circuit either via a OpenQasm file or as a Qiskit object.", RuntimeWarning)        
         self._ray_initialized = False
 
     @property
@@ -325,7 +309,10 @@ class QuantumCircuit:
                 basis_gates = self.basis_gates
             )
             self.instruction_list = parser.parse()   
-        self._check_gates_in_noise_model()     
+        self._check_gates_in_noise_model()
+
+    def read_from_qiskit():
+        raise NotImplementedError    
     
     def _initialize_ray(self,
                         num_cores:int
