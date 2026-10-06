@@ -1,7 +1,8 @@
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from EagleDecomposition import EagleDecomposition
-from HeronDecomposition import HeronDecomposition
+from .EagleDecomposition import EagleDecomposition
+from .HeronDecomposition import HeronDecomposition
 
 
 DEFAULT_GATE_SET = {
@@ -34,3 +35,36 @@ def use_basis_gate_set(
         yield
     finally:
         _basis_gate_set.reset(token)
+
+class _BasisGateSetProxy:
+    def __getitem__(
+            self, 
+            key : str
+        ) -> dict:
+        return get_map()[key]
+
+    def __contains__(
+            self,
+            key : str
+        ) -> str:
+        return key in get_map()
+
+    def keys(self) -> list[str]:
+        return get_map().keys()
+
+    def values(self)->Iterable:
+        return get_map().values()
+
+    def items(self)->Iterable:
+        return get_map().items()
+
+    def __iter__(self) -> Iterator:
+        return iter(get_map())
+
+    def __len__(self) -> int:
+        return len(get_map())
+
+    def __repr__(self) -> str:
+        return repr(get_map())
+
+basis_gate_set = _BasisGateSetProxy()

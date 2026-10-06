@@ -105,7 +105,7 @@ class QuantumCircuit:
             raise TypeError("noise_model must be a dictionary.")
         if not isinstance(backend_qpu_type, str):
             raise TypeError("backend_qpu_type must be a string.")
-        if backend_qpu_type.lower() not in QuantumCircuit.basis_gates_set:
+        if backend_qpu_type.lower() not in basis_gate_set:
             raise ValueError(f"backend_qpu_type must be one of {list(basis_gate_set.keys())}.")
         if not isinstance(sim_backend, str):
             raise TypeError("sim_backend must be a string.")

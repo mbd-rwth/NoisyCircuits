@@ -41,13 +41,13 @@
 static inline double get_single_qubit_noise_probability(complex128* __restrict__ state, const complex128& __restrict u00, const complex128& __restrict__ u01, const complex128& __restrict__ u10, const complex128& __restrict__ u11, const std::size_t dim, const std::size_t stride){
     double probability = 0.0;
     for (std::size_t pair = 0; pair < (dim >> 1); ++pair){
-        const std::size_t i = (pair & (stride - 1) | ((pair & ~(stride - 1))) << 1);
+        const std::size_t i = ((pair & (stride - 1)) | ((pair & ~(stride - 1))) << 1);
         const std::size_t j = i | stride;
         const complex128 s0 = state[i];
         const complex128 s1 = state[j];
         const complex128 n0 = u00 * s0 + u01 * s1;
         const complex128 n1 = u10 * s0 + u11 * s1;
-        probability += n0.real() * n0.real() + n0.imag() * n0.imag() + n1.real() * n0.real() + n1.imag() * n1.imag();
+        probability += n0.real() * n0.real() + n0.imag() * n0.imag() + n1.real() * n1.real() + n1.imag() * n1.imag();
     }
     return probability;
 }
@@ -76,13 +76,13 @@ static inline double get_single_qubit_noise_probability(complex128* __restrict__
  */
 static inline void apply_inplace_operator_single_qubit(complex128* __restrict__ state, const complex128& __restrict u00, const complex128& __restrict__ u01, const complex128& __restrict__ u10, const complex128& __restrict__ u11, const std::size_t dim, const std::size_t stride){
     #pragma omp parallel for
-    for (std::size_t pair; pair < (dim >> 1); ++pair){
-        const std::size_t i = (pair & (stride - 1) | ((pair & ~(stride - 1))) << 1);
+    for (std::size_t pair = 0; pair < (dim >> 1); ++pair){
+        const std::size_t i = ((pair & (stride - 1)) | ((pair & ~(stride - 1))) << 1);
         const std::size_t j = i | stride;
         const complex128 s0 = state[i];
         const complex128 s1 = state[j];
         state[i] = u00 * s0 + u01 * s1;
-        state[j] = u01 * s0 + u11 * s1;
+        state[j] = u10 * s0 + u11 * s1;
     }
 }
 
@@ -109,9 +109,10 @@ static inline void apply_inplace_operator_single_qubit(complex128* __restrict__ 
 static inline void apply_single_qubit_noise(complex128* __restrict__ state, const std::size_t q, const std::size_t q_null, const std::size_t num_qubits, const std::vector<matrix>& noise_operators, std::mt19937_64& traj_engine){
     const std::size_t dim = std::size_t{1} << num_qubits;
     const std::size_t stride = std::size_t{1} << q;
-    std::vector<double> probability_list(noise_operators.size(), 0.0);
+    int noise_length = noise_operators.size();
+    std::vector<double> probability_list(noise_length, 0.0);
     #pragma omp parallel for schedule(static) shared(dim, stride)
-    for (int counter = 0; counter < noise_operators.size(); ++counter){
+    for (int counter = 0; counter < noise_length; ++counter){
         const matrix& oper = noise_operators[counter];
         complex128 u00 = oper[0][0];
         complex128 u01 = oper[0][1];
@@ -129,7 +130,7 @@ static inline void apply_single_qubit_noise(complex128* __restrict__ state, cons
     complex128 u11 = oper[1][1];
     apply_inplace_operator_single_qubit(state, u00, u01, u10, u11, dim, stride);
     const double p_norm = 1 / std::sqrt(probability_list[c]);
-    #pragma omp parallel
+    #pragma omp parallel for
     for (std::size_t i = 0; i < dim; i++){
         state[i] *= p_norm;
     }
@@ -342,7 +343,7 @@ static inline void apply_noise_for_unitary_matrix(complex128* __restrict__ state
  *      None
  */
 static inline void apply_two_qubit_noise(complex128* __restrict__ state, const std::size_t q1, const std::size_t q2, const std::size_t num_qubits, const std::vector<matrix>& noise_operators, std::mt19937_64& traj_engine){
-    const std::size_t dim = dim >> 2;
+    const std::size_t dim = std::size_t{1} << num_qubits;
     const std::size_t iters = dim >> 2;
     const std::size_t q_min = q1 < q2 ? q1 : q2;
     const std::size_t q_max = q1 > q2 ? q1 : q2;
@@ -351,9 +352,10 @@ static inline void apply_two_qubit_noise(complex128* __restrict__ state, const s
     const std::size_t ull_q1 = 1ULL << q1;
     const std::size_t ull_q2 = 1ULL << q2;
     const std::size_t target_mask = ull_q1 | ull_q2;
-    std::vector<double> probability_list(noise_operators.size(), 0.0);
+    int noise_length = noise_operators.size();
+    std::vector<double> probability_list(noise_length, 0.0);
     #pragma omp parallel for schedule(static) shared(m1, m2, ull_q1, ull_q2, target_mask, dim, iters)
-    for (int i = 0; i < noise_operators.size(); ++i){
+    for (int i = 0; i < noise_length; ++i){
         const matrix& oper = noise_operators[i];
         const complex128 u00 = oper[0][0];
         const complex128 u01 = oper[0][1];

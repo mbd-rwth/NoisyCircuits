@@ -136,7 +136,10 @@ ext_modules = [
     ),
     Extension(
         "simulator_mpi",
-        ["./src/NoisyCircuits/utils/custom/src/SimulatorMPI.cpp"],
+        [
+            "./src/NoisyCircuits/utils/custom/src/SimulatorMPI.cpp",
+            "./src/NoisyCircuits/utils/custom/src/Communicator.cpp"
+        ],
         include_dirs=[pybind11.get_include()],
         language="c++",
     ),

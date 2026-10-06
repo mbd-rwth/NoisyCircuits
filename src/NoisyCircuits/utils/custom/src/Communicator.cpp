@@ -212,7 +212,7 @@ namespace {
     }
 
     // Broadcast a single packed buffer
-    std::vector<char> bcast_buffer(std::vector<char> buf, int root, MPI_COMM comm){
+    std::vector<char> bcast_buffer(std::vector<char> buf, int root, MPI_Comm comm){
         int rank;
         MPI_Comm_rank(comm, &rank);
         int size = static_cast<int>(buf.size());
@@ -225,7 +225,7 @@ namespace {
 }
 
 
-void broadcast_all(std::list<ItemEntry>& instruction_list, std::vector<noise_map>& single_qubit_instructions, noise_map2q two_qubit_instructions, int root, MPI_COMM comm){
+void broadcast_all(std::list<ItemEntry>& instruction_list, std::vector<noise_map>& single_qubit_instructions, noise_map2q& two_qubit_instructions, int root, MPI_Comm comm){
     {
         std::vector<char> buf = bcast_buffer(pack_items(instruction_list), root, comm);
         instruction_list = unpack_items(buf);
@@ -240,12 +240,12 @@ void broadcast_all(std::list<ItemEntry>& instruction_list, std::vector<noise_map
     }
 }
 
-std::vector<double> reduce_final_result(const std::vector<double>& local_result, int root, MPI_COMM comm){
+std::vector<double> reduce_final_result(const std::vector<double>& local_result, int root, MPI_Comm comm){
     int rank;
     MPI_Comm_rank(comm, &rank);
     int local_size = static_cast<int>(local_result.size());
     std::vector<double> result(local_size, 0.0);
-    MPI_Reduce(local_result.data(), result.data(), local_size, MPI_C_DOUBLE_COMPLEX, MPI_SUM, root, comm);
+    MPI_Reduce(local_result.data(), result.data(), local_size, MPI_DOUBLE, MPI_SUM, root, comm);
     if (rank != root) result.clear();
     return result;
 }

@@ -100,8 +100,8 @@ class QuantumCircuitMPI:
         self.cores_per_rank = cores_per_rank
         self.threshold = threshold
         self.verbose = verbose
-        self._basis_gates = basis_gate_set[self.qpu]["basis_gates"]
-        self.basis_gates = self._basis_gates
+        self.basis_gates = basis_gate_set[self.qpu]["basis_gates"]
+        # self.basis_gates = self._basis_gates
         modeller = BuildModel(
                 noise_model = noise_model,
                 num_qubits = self.num_qubits,
@@ -155,17 +155,17 @@ class QuantumCircuitMPI:
         if name is not None:
             return getattr(self._gate_decomposition, name)
 
-    @property
-    def basis_gates(self) -> list[list[str]]:
-        """
-        Getter for the basis gates attribute
+    # @property
+    # def basis_gates(self) -> list[list[str]]:
+    #     """
+    #     Getter for the basis gates attribute
 
-        Returns
-        -------
-        list[list[str]]
-            The list of basis gates supported by the quantum hardware being simulator.
-        """
-        return self._basis_gates
+    #     Returns
+    #     -------
+    #     list[list[str]]
+    #         The list of basis gates supported by the quantum hardware being simulator.
+    #     """
+    #     return self._basis_gates
 
     def refresh(self) -> None:
         """
@@ -273,7 +273,7 @@ class QuantumCircuitMPI:
             qubits = list(range(self.num_qubits))
         if not isinstance(qubits, list) or any(not isinstance(q, int) for q in qubits):
             raise TypeError("qubits must be a list of integers")
-        if any((q < 1 or q > self.num_qubits) for q in qubits):
+        if any((q < 0 or q > self.num_qubits) for q in qubits):
             raise ValueError(f"One or more of the qubits are out of range. The valid range is 0 to ·{self.num_qubits}")
         if not isinstance(num_trajectories, int):
             raise TypeError("num_trajectories must be of type int")

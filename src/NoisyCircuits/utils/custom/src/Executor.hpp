@@ -108,7 +108,7 @@ std::vector<double> run_trajectories_in_rank(std::list<ItemEntry>& instruction_l
     for (int traj = 0; traj < trajectories_on_rank; ++traj){
         std::vector<complex128> trajectory_result = run_single_trajectory(instruction_list, single_qubit_instructions, two_qubit_instructions, num_qubits, gate_map, noise_function_map, base_seed + traj, num_threads);
         #pragma omp parallel for
-        for (int j = 0; j < dim; ++j){
+        for (std::size_t j = 0; j < dim; ++j){
             local_sum[j] += trajectory_result[j].real();
         }
     }
@@ -129,9 +129,9 @@ std::vector<double> execute(std::list<ItemEntry>& instruction_list, std::vector<
     std::vector<double> local_sum = run_trajectories_in_rank(instruction_list, single_qubit_instructions, two_qubit_instructions, num_qubits, my_trajectories, num_threads, rank);
     std::vector<double> total_sum = reduce_final_result(local_sum, root, comm);
     if (rank == root && total_trajectories > 0){
-        double divide_val = 1 / total_trajectories;
+        double divide_val = 1.0 / total_trajectories;
         #pragma omp parallel for shared(divide_val)
-        for (int t = 0; t < total_sum.size(); ++t){
+        for (std::size_t t = 0; t < total_sum.size(); ++t){
             total_sum[t] *= divide_val;
         }
     }
