@@ -12,8 +12,25 @@ import warnings
 import numpy as np
 import simulator_mpi as simulator
 import measurement_error_applicator
+import os
 from collections.abc import Callable
 from NoisyCircuits.utils import BuildModel, Parser, compute_marginal_probs, convert_matrix_to_little_endian, basis_gate_set
+from joblib.externals.loky import get_reusable_executor
+
+
+def _launch_rank() -> int:
+    for var in ("PMIX_RANK", "OMPI_COMM_WORLD_RANK", "SLURM_PROCID"):
+        if var in os.environ:
+            return int(os.environ.get(var))
+    return 0
+
+class _NullDecomposition:
+    instruction_list = []
+    def __getattr__(
+            self, 
+            name : str
+        ) -> Callable:
+        return lambda *args, **kwargs: None
 
 
 class QuantumCircuitMPI:
@@ -102,33 +119,41 @@ class QuantumCircuitMPI:
         self.verbose = verbose
         self.basis_gates = basis_gate_set[self.qpu]["basis_gates"]
         # self.basis_gates = self._basis_gates
-        modeller = BuildModel(
-                noise_model = noise_model,
-                num_qubits = self.num_qubits,
-                num_cores = self.cores_per_rank,
-                threshold = self.threshold,
-                basis_gates = self.basis_gates,
-                verbose = self.verbose
-        )
-        single_error, double_error, measurement_error, connectivity = modeller.build_qubit_gate_model()
-        self.single_qubit_error = {
-            q : {gate : payload["qubit_channel"] for gate, payload in gates.items()} for q, gates in single_error.items()
-        }
-        self.two_qubit_error = {
-            gate : {pair : convert_matrix_to_little_endian(payload["qubit_channel"]) for pair, payload in pairs.items()} for gate, pairs in double_error.items()
-        }
-        self.measurement_error = measurement_error
-        self.connectivity = connectivity
-        if basis_gate_set[self.qpu]["gate_decomposition"] is not None:
-            self._gate_decomposition = basis_gate_set[self.qpu]["gate_decomposition"](
-                num_qubits = self.num_qubits,
-                connectivity = self.connectivity,
-                qubit_map = modeller.qubit_coupling_map,
-                use_fractional = self.use_fractional
+        self._rank = _launch_rank()
+        if self._rank == 0:
+            modeller = BuildModel(
+                    noise_model = noise_model,
+                    num_qubits = self.num_qubits,
+                    num_cores = self.cores_per_rank,
+                    threshold = self.threshold,
+                    basis_gates = self.basis_gates,
+                    verbose = self.verbose
             )
+            single_error, double_error, measurement_error, connectivity = modeller.build_qubit_gate_model()
+            get_reusable_executor().shutdown(wait=True)
+            self.single_qubit_error = {
+                q : {gate : payload["qubit_channel"] for gate, payload in gates.items()} for q, gates in single_error.items()
+            }
+            self.two_qubit_error = {
+                gate : {pair : convert_matrix_to_little_endian(payload["qubit_channel"]) for pair, payload in pairs.items()} for gate, pairs in double_error.items()
+            }
+            self.measurement_error = measurement_error
+            self.connectivity = connectivity
+            if basis_gate_set[self.qpu]["gate_decomposition"] is not None:
+                self._gate_decomposition = basis_gate_set[self.qpu]["gate_decomposition"](
+                    num_qubits = self.num_qubits,
+                    connectivity = self.connectivity,
+                    qubit_map = modeller.qubit_coupling_map,
+                    use_fractional = self.use_fractional
+                )
+            else:
+                self._gate_decomposition = None
+                warnings.warn("A decomposition for the given QPU does not exist and therefore, circuit building is not possible. Please import your circuit either via a OpenQasm file or as a Qiskit object.", RuntimeWarning)
         else:
-            self._gate_decomposition = None
-            warnings.warn("A decomposition for the given QPU does not exist and therefore, circuit building is not possible. Please import your circuit either via a OpenQasm file or as a Qiskit object.", RuntimeWarning)
+            self.single_qubit_error, self.two_qubit_error = {}, {}
+            self.measurement_error, self.connectivity = None, None
+            self._gate_decomposition = _NullDecomposition()
+            return
 
     def __getattr__(
             self,

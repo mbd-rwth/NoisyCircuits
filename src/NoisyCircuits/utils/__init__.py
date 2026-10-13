@@ -8,3 +8,4 @@ from .HelperFunctions import compute_marginal_probs, convert_matrix_to_little_en
 from .CreateNoiseModel import CreateNoiseModel, GetNoiseModel
 from .OpenQasmParser import Parser
 from .GateSet import basis_gate_set
+from .QubitOptimizer import *
