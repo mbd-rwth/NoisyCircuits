@@ -21,6 +21,7 @@ import numpy as np
 from collections import defaultdict
 import logging
 from joblib import Parallel, delayed
+from NoisyCircuits.utils.QubitOptimizer import select_and_relabel
 from os import cpu_count
 
 def _map_instruction_qubits(instrs, gate_qubits)->list:
@@ -407,12 +408,14 @@ class BuildModel:
         - If basis_gates is None or not a list of lists of strings.
     """
     def __init__(self,
-                 noise_model:dict,
-                 num_qubits:int,
-                 num_cores:int=2,
-                 threshold:float=1e-12,
-                 basis_gates:list[list[str]]=None,
-                 verbose:bool=True)->None:
+                 noise_model : dict,
+                 num_qubits : int,
+                 num_cores : int=2,
+                 threshold : float=1e-12,
+                 basis_gates : list[list[str]]=None,
+                 verbose : bool = True,
+                 qubit_layout : list[int] | None = None
+            ) -> None:
         """
         Initializes the BuildModel with a noise model, number of qubits, and an optional threshold.
         """
@@ -436,9 +439,14 @@ class BuildModel:
             raise TypeError("Basis gates must be a list of lists of strings.")
         if not isinstance(verbose, bool):
             raise TypeError("Verbose flag must be a boolean.")
+        if qubit_layout is not None:
+            if not isinstance(qubit_layout, list) or any(not isinstance(qubit, int) for qubit in qubit_layout):
+                raise TypeError("qubit_layout must be of type list[int]")
+            if any(qubit < 0 for qubit in qubit_layout):
+                raise ValueError("qubits in qubit_layout must have indices greater than equal to 0.")
         self.noise_model = noise_model
         self.num_qubits = num_qubits
-        self.use_qubits = list(range(num_qubits))
+        self.use_qubits = qubit_layout if qubit_layout is not None else range(num_qubits)
         self.threshold = threshold
         self.basis_gates = basis_gates
         self.num_cores = num_cores
@@ -901,4 +909,13 @@ class BuildModel:
         connectivity_map = self._create_connectivity_map(two_qubit_gate_error_instructions, self.use_qubits)
         self.logger.info("Qubit Connectivity Map Prepared.")
         self.logger.info("Returning Single Qubit Error Instructions, Two Qubit Gate Error Instructions, Measurement Errors and Connectivity Map.")
+        if self.use_qubits != list(range(self.num_qubits)):
+            (single_qubit_error_instructions, two_qubit_gate_error_instructions, measurement_errors, connectivity_map, self.qubit_coupling_map) = select_and_relabel(
+                single_qubit_error_instructions,
+                two_qubit_gate_error_instructions,
+                measurement_errors,
+                connectivity_map,
+                self.qubit_coupling_map,
+                self.use_qubits
+            )
         return single_qubit_error_instructions, two_qubit_gate_error_instructions, measurement_errors, connectivity_map

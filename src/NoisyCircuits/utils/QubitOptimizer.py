@@ -34,7 +34,7 @@ _LOG_FIDELITY_FLOOR = np.log(1e-12)
 
 
 def log_fidelity(error : float) -> float:
-    return math.log1p(-error) if np.isclose(error, 1.0) else _LOG_FIDELITY_FLOOR
+    return math.log1p(-error) if error < 1 - 1e-12 else _LOG_FIDELITY_FLOOR
 
 def _average_log_infidelity(
         process_fidelity : float,
@@ -48,6 +48,7 @@ def channel_infidelity(kraus_ops : list[np.ndarray]) -> float:
     return max(0.0, 1.0 - (overlap + d) / (d * (d + 1.0)))
 
 def readout_infidelity(confusion_matrix : np.ndarray) -> float:
+    confusion_matrix = np.asarray(confusion_matrix, dtype=np.float64)
     return 0.5 * (confusion_matrix[0, 1] + confusion_matrix[1, 0])
 
 def select_and_relabel(
@@ -168,7 +169,7 @@ class _ProcessFidelityCalculator:
         term_value = self.single_qubit_term if n_qubits == 1 else self.two_qubit_term
         total = float(sum(entry["probabilities"]))
         if total <= 0:
-            raise ValueError("Error entry {} on {} has no probability mass".format(entry.gett("operations"), entry["gate_qubits"]))
+            raise ValueError("Error entry {} on {} has no probability mass".format(entry.get("operations"), entry["gate_qubits"]))
         return sum(p * term_value(instruction) for p, instruction in zip(entry["probabilities"], entry["instructions"])) / total
 
 
@@ -205,7 +206,7 @@ class QubitLayoutOptimizer:
             noise_model : dict,
             basis_gates : list[list[str]]
     ) -> None:
-        single_gates, double_gates = set(basis_gates[0], basis_gates[1])
+        single_gates, double_gates = set(basis_gates[0]), set(basis_gates[1])
         calculator = _ProcessFidelityCalculator()
         self.single_qubit_infidelity, self.readout_error = {}, {}
         self.two_qubit_infidelity = {
@@ -274,7 +275,7 @@ class QubitLayoutOptimizer:
             }
         else:
             raise TypeError("Unknown type for error_cutoff")
-        if any(not 0.0 <= value <= 1.0 for value in cutoff.values):
+        if any(not 0.0 <= value <= 1.0 for value in cutoff.values()):
             raise ValueError("Cutoff values must be between 0 and 1")
         return cutoff
 
@@ -351,6 +352,8 @@ class QubitLayoutOptimizer:
             raise TypeError("n_jobs must be an integer")
         if not isinstance(n, int):
             raise TypeError("n needs to be an integer")
+        if time_limit is None:
+            time_limit = 60.0
         if not isinstance(time_limit, (int, float)):
             raise TypeError("time_limit must be a float or float-like")
         if n_jobs == 0 or n_jobs < -1:
@@ -360,7 +363,7 @@ class QubitLayoutOptimizer:
         if n < 1 or n > len(self.node_weight):
             raise ValueError("Requested qubits are out of bounds")
         if n == 1:
-            self.is_optimal == True
+            self.is_optimal = True
             return [max(self.node_weight, key = lambda q: (self.node_weight[q], -q))]
         if self.interaction == INTERACTIONS[1]:
             return self._best_qubit_cluster(n, time_limit, n_jobs)
@@ -382,7 +385,7 @@ class QubitLayoutOptimizer:
             q : sorted(nbs) for q, nbs in self.adjacency.items()
         }
         steps = [
-            self.node_weight[b] + self.edge_weight[frozenset(a, b)] for a in adjacency for b in adjacency[a]
+            self.node_weight[b] + self.edge_weight[frozenset((a, b))] for a in adjacency for b in adjacency[a]
         ]
         max_steps = max(steps) if steps else 0.0
         best = {
@@ -451,7 +454,7 @@ class QubitLayoutOptimizer:
         return (hops, -fidelity, tuple(ordered_cluster))
 
     def _device_distances(self) -> tuple[list[int], dict, np.ndarray]:
-        if not hasattr(self, "device_distance_cache"):
+        if not hasattr(self, "_device_distances_cache"):
             nodes = sorted(self.adjacency)
             index = {
                 q : i for i, q in enumerate(nodes)
@@ -662,7 +665,7 @@ class QubitLayoutOptimizer:
             incumbent : tuple,
             deadline : float | None
     ) -> tuple:
-        context = self._cluster_context(n)
+        context = self._qubit_cluster_context(n)
         index, D, w_min = context["index"], context["D"], context["w_min"]
         node_w, best_edge = context["node_w"], context["best_edge"]
         n_pairs = n * (n - 1) // 2
@@ -703,7 +706,7 @@ class QubitLayoutOptimizer:
             if deadline is not None and state["expanded"] % 1024 == 0 and time.time() > deadline:
                 state["stopped"] = True
                 return
-            if len(members) > n:
+            if len(members) == n:
                 key = self._qubit_cluster_key(members)
                 if key < best["key"]:
                     best["key"] = key
@@ -737,7 +740,7 @@ class QubitLayoutOptimizer:
                 extension,
                 root, 
                 neighbourhood | self.adjacency[w] | {w},
-                D[index[root], index[w]],
+                D[index[root]] + D[index[w]],
                 int(D[index[root], index[w]]),
                 self.node_weight[root] + self.node_weight[w] + self.edge_weight[frozenset((root, w))]
             )
@@ -760,10 +763,12 @@ class QubitLayoutOptimizer:
                 self._run_search_tasks(n, tasks, best, deadline)
             ]
         else:
+            if n_jobs == -1:
+                n_jobs = len(os.sched_getaffinity(0))
             chunks = [tasks[k::n_jobs * 4] for k in range(n_jobs * 4)]
             results = Parallel(n_jobs = n_jobs)(delayed(
-                (self._run_search_tasks)(n, chunk, best, deadline) for chunk in chunks if chunk
-            ))
+                self._run_search_tasks)(n, chunk, best, deadline) for chunk in chunks if chunk
+            )
         searched = min([best] + [key for key, _ in results])
         self.is_optimal = all(done for _, done in results)
         if not self.is_optimal and searched < best:

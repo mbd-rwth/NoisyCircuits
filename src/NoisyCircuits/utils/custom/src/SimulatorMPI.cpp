@@ -104,7 +104,7 @@ PYBIND11_MODULE(simulator_mpi, m){
         int finalized = 0;
         MPI_Finalized(&finalized);
         if (!finalized){
-            MPI_Barrier();
+            MPI_Barrier(MPI_COMM_WORLD);
             MPI_Finalize();
         }
     }, "Close MPI session with safety built in for multiple calls");
