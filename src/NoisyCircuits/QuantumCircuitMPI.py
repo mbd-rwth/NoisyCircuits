@@ -14,7 +14,7 @@ import simulator_mpi as simulator
 import measurement_error_applicator
 import os
 from collections.abc import Callable
-from NoisyCircuits.utils import BuildModel, Parser, compute_marginal_probs, convert_matrix_to_little_endian, basis_gate_set
+from NoisyCircuits.utils import BuildModel, Parser, compute_marginal_probs, convert_matrix_to_little_endian, basis_gate_set, QubitLayoutOptimizer, remove_couplers, INTERACTIONS
 from joblib.externals.loky import get_reusable_executor
 
 
@@ -84,7 +84,10 @@ class QuantumCircuitMPI:
                 backend_qpu_type : str = "heron",
                 cores_per_rank : int = 1,
                 threshold : float = 1e-12,
-                verbose : bool = False
+                verbose : bool = False,
+                qubit_layout : str | list[int] | None = None,
+                layout_optimization_time_limit : float = 60.0,
+                layout_optimization_error_cutoff : float | dict | None = 0.25
     ) -> None:
         """
         Initializes the QuantumCircuitMPI class with the specified number of qubits, noise model and other parameters.
@@ -111,6 +114,22 @@ class QuantumCircuitMPI:
             raise ValueError("threshold must be between 0 and 1")
         if not isinstance(verbose, bool):
             raise TypeError("verbose must be of type bool")
+        if isinstance(qubit_layout, str):
+            if qubit_layout not in INTERACTIONS:
+                raise ValueError("qubit_layout must be one of the following allowed layout interaction: {}".format(INTERACTIONS))
+        elif isinstance(qubit_layout, list):
+            if any(not isinstance(qubit, int) for qubit in qubit_layout):
+                raise TypeError("Entries in qubit_layout must be integers if using a list")
+            if len(qubit_layout) != num_qubits or len(set(qubit_layout)) != num_qubits or any(q < 0 for q in qubit_layout):
+                raise ValueError("qubit_layout must have num_qubits distinct qubits and must be valid qubit indices")
+        else:
+            if qubit_layout is not None:
+                raise TypeError("qubit_layout must either be a list of integers or a string.")
+        if not isinstance(layout_optimization_time_limit, (float, int)):
+            raise TypeError("layout_optimization_time_limit must either be a float or int")
+        if layout_optimization_time_limit <= 0:
+            raise ValueError("layout_optimization_time_limit must be a positive value")
+        QubitLayoutOptimizer._parse_error_cutoff(layout_optimization_error_cutoff)
         self.num_qubits = num_qubits
         self.use_fractional = use_fractional
         self.qpu = backend_qpu_type
@@ -118,18 +137,14 @@ class QuantumCircuitMPI:
         self.threshold = threshold
         self.verbose = verbose
         self.basis_gates = basis_gate_set[self.qpu]["basis_gates"]
-        # self.basis_gates = self._basis_gates
         self._rank = _launch_rank()
         if self._rank == 0:
-            modeller = BuildModel(
-                    noise_model = noise_model,
-                    num_qubits = self.num_qubits,
-                    num_cores = self.cores_per_rank,
-                    threshold = self.threshold,
-                    basis_gates = self.basis_gates,
-                    verbose = self.verbose
+            single_error, double_error, measurement_error, connectivity, qubit_coupling_map = self._build_noise_model(
+                noise_model,
+                qubit_layout,
+                layout_optimization_time_limit,
+                layout_optimization_error_cutoff
             )
-            single_error, double_error, measurement_error, connectivity = modeller.build_qubit_gate_model()
             get_reusable_executor().shutdown(wait=True)
             self.single_qubit_error = {
                 q : {gate : payload["qubit_channel"] for gate, payload in gates.items()} for q, gates in single_error.items()
@@ -143,7 +158,7 @@ class QuantumCircuitMPI:
                 self._gate_decomposition = basis_gate_set[self.qpu]["gate_decomposition"](
                     num_qubits = self.num_qubits,
                     connectivity = self.connectivity,
-                    qubit_map = modeller.qubit_coupling_map,
+                    qubit_map = qubit_coupling_map,
                     use_fractional = self.use_fractional
                 )
             else:
@@ -153,6 +168,8 @@ class QuantumCircuitMPI:
             self.single_qubit_error, self.two_qubit_error = {}, {}
             self.measurement_error, self.connectivity = None, None
             self._gate_decomposition = _NullDecomposition()
+            self.qubit_layout, self.optimal_layout = None, None
+            self.excluded_couplers = None
             return
 
     def __getattr__(
@@ -180,17 +197,71 @@ class QuantumCircuitMPI:
         if name is not None:
             return getattr(self._gate_decomposition, name)
 
-    # @property
-    # def basis_gates(self) -> list[list[str]]:
-    #     """
-    #     Getter for the basis gates attribute
+    def _build_noise_model(
+            self,
+            noise_model : dict,
+            qubit_layout : str | list[int] | None,
+            layout_opt_time_limit : float | None,
+            layout_opt_error_cutoff : float | dict | None
+    ) -> tuple[dict, dict, dict, dict, list[tuple[int, int]]]:
+        """
+        Method that selects the physical qubits on the hardware based on qubit requirements, error thresholds on the qubit and then maps them to logical qubits. The noise model is then built following the qubit map.
 
-    #     Returns
-    #     -------
-    #     list[list[str]]
-    #         The list of basis gates supported by the quantum hardware being simulator.
-    #     """
-    #     return self._basis_gates
+        Parameters
+        ----------
+        noise_model : dict
+            The raw, unprocessed noise model provided as a parsable dictionary.
+        qubit_list : str | list[int] | None
+            None, a list of physical qubits on the device or one of the allowed qubit interactions ("nearest_neighbour" or "all_to_all")
+        layout_opt_time_limit : float
+            Maximum allocated time for qubit layout optimization.
+        layout_opt_error_cutoff : float | dict | None
+            Error threshold to discard qubits and/or qubit couplers.
+
+        Returns
+        -------
+        tuple[dict, dict, dict, dict, list[tuple[int]]]
+            The post-processed single qubit and two qubit noise models, the measurement error model, qubit layout connectivity map and the qubit coupling map.
+        """
+        self.optimal_layout = None
+        excluded_couplers = []
+        if isinstance(qubit_layout, str):
+            optimizer = QubitLayoutOptimizer(
+                noise_model,
+                self.basis_gates,
+                qubit_layout,
+                layout_opt_error_cutoff
+            )
+            qubit_layout = optimizer.best_layout(
+                self.num_qubits,
+                layout_opt_time_limit,
+                self.cores_per_rank
+            )
+            self.optimal_layout = optimizer.is_optimal
+            excluded_couplers = optimizer.excluded_couplers
+        modeller = BuildModel(
+            noise_model,
+            self.num_qubits,
+            self.cores_per_rank,
+            self.threshold,
+            self.basis_gates,
+            self.verbose,
+            qubit_layout
+        )
+        single_error, double_error, measurement_error, connectivity = modeller.build_qubit_gate_model()
+        qubit_coupling_map = modeller.qubit_coupling_map
+        self.qubit_layout = list(modeller.use_qubits)
+        physical_to_logical_map = {
+            p : i for i,p in enumerate(self.qubit_layout)
+        }
+        self.excluded_couplers = [
+            (physical_to_logical_map[a], physical_to_logical_map[b]) for a, b in excluded_couplers if a in physical_to_logical_map and b in physical_to_logical_map
+        ]
+        if self.excluded_couplers:
+            connectivity, qubit_coupling_map = remove_couplers(connectivity, qubit_coupling_map, self.excluded_couplers)
+        if self.verbose:
+            print("Qubit Layout (logical qubit -> physical qubit): {}".format(self.qubit_layout))
+        return single_error, double_error, measurement_error, connectivity, qubit_coupling_map
 
     def refresh(self) -> None:
         """
