@@ -65,16 +65,16 @@ def select_and_relabel(
         p : i for i, p in enumerate(layout)
     }
     single = {
-        p2l[q] : v for q, v in single_qubit_errors.items() if q in p2l
+        i : single_qubit_errors[p] for i, p in enumerate(layout) if p in single_qubit_errors
     }
     double = {
         gate : {(p2l[a], p2l[b]) : v for (a,b), v in pairs.items() if a in p2l and b in p2l} for gate, pairs in two_qubit_errors.items()
     }
     measurement = {
-        p2l[q] : v for q, v in measurement_errors.items() if q in p2l
+        i : measurement_errors[p] for i,p in enumerate(layout) if p in measurement_errors
     }
     conn = {
-        p2l[q] : [p2l[x] for x in nbs if x in p2l] for q, nbs in connectivity.items() if q in p2l
+        i : [p2l[x] for x in connectivity[p] if x in p2l] for i,p in enumerate(layout) if p in connectivity
     }
     coupling = [
         (p2l[a], p2l[b]) for a,b in coupling_map if a in p2l and b in p2l

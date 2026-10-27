@@ -613,14 +613,20 @@ class BuildModel:
         """
         no_noise_qubit_channel = [np.eye(2, dtype=np.complex128), np.zeros((2,2), dtype=np.complex128)]
         single_qubit_errors_processed = {}
-        qubits_error_dicts = Parallel(n_jobs=self.num_cores)(
-                                        delayed(_post_process_single_qubit_errors_single_qubit)(single_qubit_errors[q], q, self.num_qubits, self.threshold, self.instruction_map) for q in single_qubit_errors.keys()
-                                )
-        for q, qubit_error_dict in zip(single_qubit_errors.keys(), qubits_error_dicts):
+        qubits = list(self.use_qubits)
+        missing = [q for q in qubits if q not in single_qubit_errors]
+        if missing:
+            self.logger.warning("No single qubit gate errors found for qubits {} (Treated as noiseless)".format(missing))
+        qubit_error_dicts = Parallel(n_jobs = self.num_cores)(
+            delayed(_post_process_single_qubit_errors_single_qubit)(
+                single_qubit_errors.get(q, {}), q, self.num_qubits, self.threshold, self.instruction_map
+            ) for q in qubits
+        )
+        for q, qubit_error_dict in zip(qubits, qubit_error_dicts):
             for gates in basis_gates:
                 if gates not in qubit_error_dict:
                     qubit_error_dict[gates] = {
-                        "qubit_channel": no_noise_qubit_channel
+                        "qubit_channel" : no_noise_qubit_channel
                     }
             single_qubit_errors_processed[q] = qubit_error_dict
         return single_qubit_errors_processed
