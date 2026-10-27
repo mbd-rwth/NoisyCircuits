@@ -4,6 +4,7 @@
 
 import numpy as np
 from numba import njit
+import measurement_error_applicator
 
 
 def compute_marginal_probs(full_system_probs:np.ndarray[np.float64],
@@ -304,3 +305,47 @@ def convert_state_endianess(
             tmp = psi[lo]
             psi[lo] = psi[hi]
             psi[hi] = tmp
+
+def apply_readout_error(
+        prob : np.ndarray[np.float64],
+        measurement_error : dict,
+        qubits : list[int],
+        num_threads : int
+) -> np.ndarray[np.ndarray]:
+    """
+    Helper function to apply the measurement error on the measured qubits for noise-aware simulations.
+
+    Parameters
+    ----------
+    prob : np.ndarray[np.float64]
+        1D array of probabilities after noise-aware simulation
+    measurement_error : dict
+        Dictionary containing the stochastic measurement error matrices for each qubit in the system
+    qubits : list[int]
+        List of qubits that are measured
+    num_threads : int
+        Number of OpenMP threads for the measurement error application.
+
+    Returns
+    -------
+    np.ndarray[np.float64]
+        Updated probabilities post measurement error application.
+
+    Raises
+    ------
+    ValueError (Raised from C++ execution)
+        - Number of entries in the prob is not 2^m where m is the number of measured qubits
+        - The number of error matrices in the measurement error dictionary is less than the number of measured qubits
+        - The indices of the measured qubits are out of bounds.
+    """
+    measurement_error_structured = {
+        i : measurement_error[q] for i, q in enumerate(sorted(qubits))
+    }
+    measurement_error_applicator.apply_measurement_error(
+        prob,
+        measurement_error_structured,
+        list(range(len(qubits))),
+        len(qubits),
+        num_threads
+    )
+    return prob

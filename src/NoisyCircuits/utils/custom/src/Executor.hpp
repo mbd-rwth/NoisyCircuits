@@ -1,4 +1,5 @@
 #pragma once
+#include <stdexcept>
 #include "Communicator.hpp"
 #include "TypeDefs.hpp"
 #include "NoiseParser.hpp"
@@ -121,6 +122,9 @@ std::vector<double> execute(std::list<ItemEntry>& instruction_list, std::vector<
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &num_ranks);
     broadcast_all(instruction_list, single_qubit_instructions, two_qubit_instructions, root, comm);
+    if (instruction_list.empty()){
+        throw std::invalid_argument("Empty Circuit detected during execution.");
+    }
     std::vector<int> trajectory_counts;
     if (rank == root){
         trajectory_counts = distribute_trajectory(total_trajectories, num_ranks);

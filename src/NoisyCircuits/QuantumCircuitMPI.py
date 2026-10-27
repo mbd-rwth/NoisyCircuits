@@ -11,10 +11,9 @@ Example:\n
 import warnings
 import numpy as np
 import simulator_mpi as simulator
-import measurement_error_applicator
 import os
 from collections.abc import Callable
-from NoisyCircuits.utils import BuildModel, Parser, compute_marginal_probs, convert_matrix_to_little_endian, basis_gate_set, QubitLayoutOptimizer, remove_couplers, INTERACTIONS
+from NoisyCircuits.utils import BuildModel, Parser, compute_marginal_probs, convert_matrix_to_little_endian, basis_gate_set, QubitLayoutOptimizer, remove_couplers, INTERACTIONS, apply_readout_error
 from joblib.externals.loky import get_reusable_executor
 
 
@@ -137,6 +136,7 @@ class QuantumCircuitMPI:
         self.threshold = threshold
         self.verbose = verbose
         self.basis_gates = basis_gate_set[self.qpu]["basis_gates"]
+        simulator.initialize_mpi()
         self._rank = _launch_rank()
         if self._rank == 0:
             single_error, double_error, measurement_error, connectivity, qubit_coupling_map = self._build_noise_model(
@@ -379,10 +379,9 @@ class QuantumCircuitMPI:
             raise ValueError("num_trajectories must be a positive integer.")
         if num_trajectories < 50:
             warnings.warn("The specified number of trajectories might not be sufficient to produce high-fidelity with a density matrix simulation.")
+        if num_trajectories > (1 << 16) - 1:
+            raise ValueError("Got a higher number of trajectories than feasible. Maximum number of allowed trajectories: {}".format(((1 << 16) - 1)))
         rank = simulator.get_mpi_rank()
-        if rank == 0:
-            if self.instruction_list == []:
-                raise ValueError("Empty Circuit detected during execution.")
         output_array = simulator.simulate_circuit(
             self.instruction_list,
             self.single_qubit_error,
@@ -397,24 +396,14 @@ class QuantumCircuitMPI:
                     output_array,
                     [q for q in range(self.num_qubits) if q not in qubits]
                 )
-            measurement_error = {
-                i : self.measurement_error[q] for i, q in enumerate(sorted(qubits))
-            }
-            measurement_error_applicator.apply_measurement_error(
+            apply_readout_error(
                 output_array,
-                measurement_error,
+                self.measurement_error,
                 qubits,
-                len(qubits),
                 self.cores_per_rank
             )
             output_array = output_array.reshape([2] * len(qubits)).transpose(list(range(len(qubits)))[::-1]).reshape(-1)
             return output_array
-
-    def initialize_mpi(self) -> None:
-        """
-        Method to initialize MPI Ranks
-        """
-        simulator.initialize_mpi()
 
     def finalize_mpi(self) -> None:
         """

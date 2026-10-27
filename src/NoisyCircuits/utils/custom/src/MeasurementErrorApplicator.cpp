@@ -9,6 +9,7 @@
  */
 
 #include "TypeDefs.hpp"
+#include <stdexcept>
 
 /**
  * Function that retrieves the single qubit measurement error matrices from a python dictionary.
@@ -81,6 +82,40 @@ static inline void apply_measurement_error_for_qubit(double * __restrict__ proba
 }
 
 /**
+ * Function that performs a feasibility check on the given input parameters to prevent segfaults and heap corruption errors.
+ * 
+ * Inputs:
+ *      num_qubits : std::size_t
+ *          Number of qubits being measured in the circuit
+ *      probabilities_array : py_array_t<double>&
+ *          numpy array containing the probabilities of the simulated quantum circuit
+ *      qubit_list : std::vector<int>&
+ *          Vector containing the indices of the qubits being measured
+ *      measurement_matrices : std::vector<real_matrix>&
+ *          Vector containing the measurement error matrices for the measured qubits
+ * 
+ * Throws:
+ *      std::invalid_argument
+ *          - Probability array does not contain 2^m entries for m measured qubits
+ *          - Fewer readout error matrices were retrieved compared to the number of measured qubits
+ *          - When a measured qubit index is out of bounds.
+ */
+static inline void perform_feasibility_checks(std::size_t num_qubits, py::array_t<double>& probabilities_array, std::vector<int>& qubit_list, std::vector<real_matrix>& measurement_matrices){
+    const std::size_t dim = std::size_t{1} << num_qubits;
+    if (static_cast<std::size_t>(probabilities_array.size()) != dim){
+        throw std::invalid_argument("probability array must have 2^m (m = num_qubits / number of measured qubits) entries");
+    }
+    if (measurement_matrices.size() < qubit_list.size()){
+        throw std::invalid_argument("Fewer readout matrices than measured qubits");
+    }
+    for (int position : qubit_list){
+        if (position < 0 || static_cast<std::size_t>(position) >= num_qubits){
+            throw std::invalid_argument("qubit position outside allowed bounds.");
+        }
+    }
+}
+
+/**
  * Main function that controls pre-processing noise and applying noise to the probabilities.
  * 
  * Inputs:
@@ -104,6 +139,7 @@ void apply_measurement_error(py::array_t<double> probabilities_array, py::dict m
         qubit_list_cpp.push_back(py::cast<int>(item));
     }
     std::vector<real_matrix> measurement_error_matrices  = get_measurement_error_matrices(measurement_noise);
+    perform_feasibility_checks(num_qubits, probabilities_array, qubit_list_cpp, measurement_error_matrices);
     py::buffer_info probs_info = probabilities_array.request();
     auto * probabilities = static_cast<double*>(probs_info.ptr);
     for (std::size_t q = 0; q < qubit_list_cpp.size(); q++){

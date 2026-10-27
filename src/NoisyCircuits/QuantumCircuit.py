@@ -27,8 +27,7 @@ from NoisyCircuits.utils.EagleDecomposition import EagleDecomposition
 from NoisyCircuits.utils.HeronDecomposition import HeronDecomposition
 from NoisyCircuits.utils import Parser
 from NoisyCircuits.utils.solvers import load_solver
-from NoisyCircuits.utils import compute_marginal_probs, convert_matrix_to_little_endian, basis_gate_set, QubitLayoutOptimizer, remove_couplers, INTERACTIONS
-import measurement_error_applicator
+from NoisyCircuits.utils import compute_marginal_probs, convert_matrix_to_little_endian, basis_gate_set, QubitLayoutOptimizer, remove_couplers, INTERACTIONS, apply_readout_error
 import ray
 import gc
 import os
@@ -230,7 +229,7 @@ class QuantumCircuit:
                 qubit_layout = optimizer.best_layout(
                     self.num_qubits,
                     layout_opt_time_limit,
-                    min(8, max(1, self.num_qubits // 4))
+                    min(8, max(1, self.num_qubits // 4)) if self.num_qubits > 8 else 1
                 )
                 self.optimal_layout = optimizer.is_optimal
                 excluded_couplers = optimizer.excluded_couplers
@@ -475,6 +474,8 @@ class QuantumCircuit:
         if num_cores == -1 or num_cores > os.cpu_count():
             print(f"Utilizing half of all available CPU cores: {os.cpu_count() // 2} cores.")
             num_cores = os.cpu_count() // 2
+        if num_trajectories > (1 << 16) - 1:
+            raise ValueError("Got a higher number of trajectories than feasible. Maximum number of allowed trajectories: {}".format(((1 << 16) - 1)))
         if self.sim_backend == "custom":
             solver = self.solver.RemoteExecutor(
                 num_qubits = self.num_qubits,
@@ -503,14 +504,10 @@ class QuantumCircuit:
             probs = probs.reshape([2]*self.num_qubits).transpose(list(range(self.num_qubits))[::-1]).reshape(-1)
         if len(qubits) < self.num_qubits:
             probs = compute_marginal_probs(probs, [q for q in range(self.num_qubits) if q not in qubits])
-        measurement_error = {
-            i : self.measurement_error[q] for i, q in enumerate(sorted(qubits))
-        }
-        measurement_error_applicator.apply_measurement_error(
-            probs, 
-            measurement_error, 
-            qubits, 
-            len(qubits), 
+        probs = apply_readout_error(
+            probs,
+            self.measurement_error,
+            qubits,
             num_cores
         )
         probs = probs.reshape([2]*len(qubits)).transpose(list(range(len(qubits)))[::-1]).reshape(-1)
@@ -565,14 +562,10 @@ class QuantumCircuit:
         probs = density_matrix_solver.solve(qubits=qubits)
         if self.sim_backend == "pennylane":
             probs = probs.reshape([2]*self.num_qubits).transpose(list(range(self.num_qubits))[::-1]).reshape(-1)
-        measurement_error = {
-            i : self.measurement_error[q] for i, q in enumerate(sorted(qubits))
-        }            
-        measurement_error_applicator.apply_measurement_error(
-            probs, 
-            measurement_error, 
-            qubits, 
-            len(qubits), 
+        probs = apply_readout_error(
+            probs,
+            self.measurement_error,
+            qubits,
             num_cores
         )
         probs = probs.reshape([2]*len(qubits)).transpose(list(range(len(qubits)))[::-1]).reshape(-1)
