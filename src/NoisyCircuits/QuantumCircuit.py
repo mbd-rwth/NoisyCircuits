@@ -94,9 +94,9 @@ class QuantumCircuit:
                 sim_backend : str = "custom",
                 threshold : float = 1e-12,
                 verbose : bool = True,
-                qubit_layout : str | list[int] = "all_to_all",
+                qubit_layout : str | list[int] | None = None,
                 layout_optimization_time_limit : float = 60.0,
-                layout_optimization_error_cutoff : float = 0.25
+                layout_optimization_error_cutoff : float | dict | None = 0.25
             )->None:
         """
         Initializes the QuantumCircuit with the specified number of qubits, noise model, number of trajectories for Monte-Carlo simulation, and threshold for noise application.
@@ -127,20 +127,17 @@ class QuantumCircuit:
             if qubit_layout not in INTERACTIONS:
                 raise ValueError("qubit_layout must be one of the following allowed layout interaction: {}".format(INTERACTIONS))
         elif isinstance(qubit_layout, list):
-            if any(not isinstance(qubit) for qubit in qubit_layout):
+            if any(not isinstance(qubit, int) for qubit in qubit_layout):
                 raise TypeError("Entries in qubit_layout must be integers if using a list")
             if len(qubit_layout) != num_qubits or len(set(qubit_layout)) != num_qubits or any(q < 0 for q in qubit_layout):
                 raise ValueError("qubit_layout must have num_qubits distinct qubits and must be valid qubit indices")
         else:
-            raise TypeError("qubit_layout must either be a list of integers or a string.")
+            if qubit_layout is not None:
+                raise TypeError("qubit_layout must either be a list of integers or a string.")
         if not isinstance(layout_optimization_time_limit, (float, int)):
             raise TypeError("layout_optimization_time_limit must either be a float or int")
         if layout_optimization_time_limit <= 0:
             raise ValueError("layout_optimization_time_limit must be a positive value")
-        if not isinstance(layout_optimization_error_cutoff, (float, int)):
-            raise TypeError("layout_optimization_error_cutoff must be of type float")
-        if not 0 <= layout_optimization_error_cutoff <= 1.0:
-            raise ValueError("cutoff error is out of bounds of [0,1]")
         QubitLayoutOptimizer._parse_error_cutoff(layout_optimization_error_cutoff)
         self.num_qubits = num_qubits
         self.qpu = backend_qpu_type.lower()
@@ -161,17 +158,22 @@ class QuantumCircuit:
         self.single_qubit_error = {
             q : {gate : payload["qubit_channel"] for gate, payload in gates.items()} for q, gates in single_error.items()
         }
-        self.two_qubit_error = {
-            gate : {pair : convert_matrix_to_little_endian(payload["qubit_channel"]) for pair, payload in pairs.items()} for gate, pairs in double_error.items()
-        }
+        if self.sim_backend not in ["pennylane"]:
+            self.two_qubit_error = {
+                gate : {pair : convert_matrix_to_little_endian(payload["qubit_channel"]) for pair, payload in pairs.items()} for gate, pairs in double_error.items()
+            }
+        else:
+            self.two_qubit_error = {
+                gate : {pair : payload["qubit_channel"] for pair, payload in pairs.items()} for gate, pairs in double_error.items()
+            }
         self.measurement_error = measurement_error
         self.connectivity = connectivity
         if basis_gate_set[self.qpu]["gate_decomposition"] is not None:
-            self._gate_decomposition = basis_gate_set[self.qpu]["gate_decomposition"](
+            self._gate_decomposer = basis_gate_set[self.qpu]["gate_decomposition"](
                 num_qubits = self.num_qubits,
                 connectivity = self.connectivity,
                 qubit_map = qubit_coupling_map,
-                use_fractional = self.use_fractional
+                use_fractional = use_fractional
             )
         else:
             self._gate_decomposer = None
@@ -228,14 +230,14 @@ class QuantumCircuit:
                 qubit_layout = optimizer.best_layout(
                     self.num_qubits,
                     layout_opt_time_limit,
-                    self.cores_per_rank
+                    min(8, max(1, self.num_qubits // 4))
                 )
                 self.optimal_layout = optimizer.is_optimal
                 excluded_couplers = optimizer.excluded_couplers
             modeller = BuildModel(
                 noise_model,
                 self.num_qubits,
-                self.cores_per_rank,
+                max(1, len(os.sched_getaffinity(0)) // 2),
                 self.threshold,
                 self.basis_gates,
                 self.verbose,
@@ -501,9 +503,12 @@ class QuantumCircuit:
             probs = probs.reshape([2]*self.num_qubits).transpose(list(range(self.num_qubits))[::-1]).reshape(-1)
         if len(qubits) < self.num_qubits:
             probs = compute_marginal_probs(probs, [q for q in range(self.num_qubits) if q not in qubits])
+        measurement_error = {
+            i : self.measurement_error[q] for i, q in enumerate(sorted(qubits))
+        }
         measurement_error_applicator.apply_measurement_error(
             probs, 
-            self.measurement_error, 
+            measurement_error, 
             qubits, 
             len(qubits), 
             num_cores
@@ -560,9 +565,12 @@ class QuantumCircuit:
         probs = density_matrix_solver.solve(qubits=qubits)
         if self.sim_backend == "pennylane":
             probs = probs.reshape([2]*self.num_qubits).transpose(list(range(self.num_qubits))[::-1]).reshape(-1)
+        measurement_error = {
+            i : self.measurement_error[q] for i, q in enumerate(sorted(qubits))
+        }            
         measurement_error_applicator.apply_measurement_error(
             probs, 
-            self.measurement_error, 
+            measurement_error, 
             qubits, 
             len(qubits), 
             num_cores

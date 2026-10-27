@@ -369,16 +369,20 @@ class QuantumCircuitMPI:
             qubits = list(range(self.num_qubits))
         if not isinstance(qubits, list) or any(not isinstance(q, int) for q in qubits):
             raise TypeError("qubits must be a list of integers")
-        if any((q < 0 or q > self.num_qubits) for q in qubits):
-            raise ValueError(f"One or more of the qubits are out of range. The valid range is 0 to ·{self.num_qubits}")
+        if any((q < 0 or q >= self.num_qubits) for q in qubits):
+            raise ValueError(f"One or more of the qubits are out of range. The valid range is 0 to ·{self.num_qubits-1}")
+        if len(set(qubits)) != len(qubits):
+            raise ValueError("Found duplicate qubit entries in measurable qubits.")
         if not isinstance(num_trajectories, int):
             raise TypeError("num_trajectories must be of type int")
         if num_trajectories <= 0:
             raise ValueError("num_trajectories must be a positive integer.")
         if num_trajectories < 50:
             warnings.warn("The specified number of trajectories might not be sufficient to produce high-fidelity with a density matrix simulation.")
-        simulator.initialize_mpi()
         rank = simulator.get_mpi_rank()
+        if rank == 0:
+            if self.instruction_list == []:
+                raise ValueError("Empty Circuit detected during execution.")
         output_array = simulator.simulate_circuit(
             self.instruction_list,
             self.single_qubit_error,
@@ -387,19 +391,33 @@ class QuantumCircuitMPI:
             num_trajectories,
             self.cores_per_rank
         )
-        simulator.finalize_mpi()
         if rank == 0:
             if len(qubits) < self.num_qubits:
                 output_array = compute_marginal_probs(
                     output_array,
                     [q for q in range(self.num_qubits) if q not in qubits]
                 )
+            measurement_error = {
+                i : self.measurement_error[q] for i, q in enumerate(sorted(qubits))
+            }
             measurement_error_applicator.apply_measurement_error(
                 output_array,
-                self.measurement_error,
+                measurement_error,
                 qubits,
                 len(qubits),
                 self.cores_per_rank
             )
             output_array = output_array.reshape([2] * len(qubits)).transpose(list(range(len(qubits)))[::-1]).reshape(-1)
             return output_array
+
+    def initialize_mpi(self) -> None:
+        """
+        Method to initialize MPI Ranks
+        """
+        simulator.initialize_mpi()
+
+    def finalize_mpi(self) -> None:
+        """
+        Method to terminate MPI Ranks
+        """
+        simulator.finalize_mpi()

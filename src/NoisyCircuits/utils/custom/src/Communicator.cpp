@@ -173,7 +173,7 @@ namespace {
         return instructions;
     }
 
-    noise_map unpack_noise_map(Reader r){
+    noise_map unpack_noise_map(Reader& r){
         noise_map single_qubit_instructions;
         int count = r.read_int();
         for (int i = 0; i < count; ++i){

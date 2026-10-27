@@ -359,7 +359,7 @@ static inline void apply_two_qubit_noise(complex128* __restrict__ state, const s
     const std::size_t q_min = q1 < q2 ? q1 : q2;
     const std::size_t q_max = q1 > q2 ? q1 : q2;
     const std::size_t m1 = (1ULL << q_min) - 1;
-    const std::size_t m2 = (1ULL << (q_max - 1)) - 1;
+    const std::size_t m2 = (1ULL << q_max) - 1;
     const std::size_t ull_q1 = 1ULL << q1;
     const std::size_t ull_q2 = 1ULL << q2;
     const std::size_t target_mask = ull_q1 | ull_q2;

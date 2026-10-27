@@ -321,7 +321,7 @@ static inline void apply_CZ_gate(complex128* __restrict__ state, const std::size
     const std::size_t dim = std::size_t{1} << num_qubits;
     const std::size_t iters = dim >> 2;
     const std::size_t m1 = (1ULL << (q1 < q2 ? q1 : q2)) - 1;
-    const std::size_t m2 = (1ULL << ((q1 > q2 ? q1 : q2) - 1)) - 1;
+    const std::size_t m2 = (1ULL << ((q1 > q2 ? q1 : q2))) - 1;
     const std::size_t target_mask = (1ULL << q1) | (1ULL << q2);
     #pragma omp parallel for num_threads(thread_count)
     for (std::size_t i = 0; i < iters; ++i){
@@ -361,7 +361,7 @@ static inline void apply_RZZ_gate(complex128* __restrict__ state, const std::siz
     const std::size_t q_min = q1 < q2 ? q1 : q2;
     const std::size_t q_max = q1 > q2 ? q1 : q2;
     const std::size_t m1 = (1ULL << q_min) - 1;
-    const std::size_t m2 = (1ULL << (q_max - 1)) - 1;
+    const std::size_t m2 = (1ULL << (q_max)) - 1;
     const std::size_t ull_q1 = 1ULL << q1;
     const std::size_t ull_q2 = 1ULL << q2;
     const std::size_t target_mask = ull_q1 | ull_q2;
@@ -416,7 +416,7 @@ static inline void apply_ECR_gate(complex128* __restrict__ state, const std::siz
     const std::size_t q_min = q1 < q2 ? q1 : q2;
     const std::size_t q_max = q1 > q2 ? q1 : q2;
     const std::size_t m1 = (1ULL << q_min) - 1;
-    const std::size_t m2 = (1ULL << (q_max - 1)) - 1;
+    const std::size_t m2 = (1ULL << q_max) - 1;
     const std::size_t ull_q1 = 1ULL << q1;
     const std::size_t ull_q2 = 1ULL << q2;
     const std::size_t target_mask = ull_q1 | ull_q2;
@@ -471,7 +471,7 @@ static inline void apply_CX_gate(complex128* __restrict__ state, const std::size
     const std::size_t q_min = q1 < q2 ? q1 : q2;
     const std::size_t q_max = q1 > q2 ? q1 : q2;
     const std::size_t m1 = (1ULL << q_min) - 1;
-    const std::size_t m2 = (1ULL << (q_max - 1)) - 1;
+    const std::size_t m2 = (1ULL << q_max) - 1;
     const std::size_t ull_q1 = 1ULL << q1;
     const std::size_t ull_q2 = 1ULL << q2;
     const std::size_t target_mask = ull_q1 | ull_q2;
@@ -518,7 +518,7 @@ static inline void apply_SWAP_gate(complex128* __restrict__ state, const std::si
     const std::size_t q_min = q1 < q2 ? q1 : q2;
     const std::size_t q_max = q1 > q2 ? q1 : q2;
     const std::size_t m1 = (1ULL << q_min) - 1;
-    const std::size_t m2 = (1ULL << (q_max - 1)) - 1;
+    const std::size_t m2 = (1ULL << q_max) - 1;
     const std::size_t ull_q1 = 1ULL << q1;
     const std::size_t ull_q2 = 1ULL << q2;
     const std::size_t target_mask = ull_q1 | ull_q2;

@@ -63,7 +63,7 @@ static inline std::unordered_map<std::string, void(*)(complex128* __restrict__, 
         "cx",
         "cz",
         "rzz",
-        "cx",
+        "ecr",
         "swap"
     };
     for (const std::string& gate_name : single_qubit_gate_names){
