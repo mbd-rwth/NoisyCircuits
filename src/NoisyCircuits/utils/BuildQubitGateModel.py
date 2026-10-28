@@ -805,17 +805,51 @@ class BuildModel:
             Connectivity map showing which qubits are connected to each other.
         """
         connectivity_map = {qubit: [] for qubit in use_qubits}
-        
-        for qubit_pair in two_qubit_gate_error_instructions[self.basis_gates[1][0]].keys():
-            if isinstance(qubit_pair, tuple) and len(qubit_pair) == 2:
-                q0, q1 = qubit_pair
-                if q0 in use_qubits and q1 in use_qubits:
-                    if q1 not in connectivity_map[q0]:
-                        connectivity_map[q0].append(q1)
-                    if q0 not in connectivity_map[q1]:
-                        connectivity_map[q1].append(q0)
+
+        for coupling_gate in self.basis_gates[1]:
+            for qubit_pair in two_qubit_gate_error_instructions.get(coupling_gate, {}).keys():
+                if isinstance(qubit_pair, tuple) and len(qubit_pair) == 2:
+                    q0, q1 = qubit_pair
+                    if q0 in use_qubits and q1 in use_qubits:
+                        if q1 not in connectivity_map[q0]:
+                            connectivity_map[q0].append(q1)
+                        if q0 not in connectivity_map[q1]:
+                            connectivity_map[q1].append(q0)
         
         return connectivity_map
+
+    def _fill_missing_coupler_error(
+            self,
+            two_qubit_gate_error_instructions : dict,
+            connectivity_map : dict
+    ) -> dict:
+        """
+        Method that adds a noisefree channel for two qubit basis gates on connected qubit pairs that have no error data.
+
+        Parameters
+        ----------
+        two_qubit_gate_error_instructions : dict
+            A dictionary containing the error channels for two qubit basis gates
+        connectivity_map : dict
+            Connectivity map showing which qubits are connected to each other
+
+        Returns
+        -------
+        dict
+            Updated dictionary for two qubit basis gates
+        """
+        no_noise_channels = [np.eye(4, dtype=np.complex128), np.zeros((4,4), dtype=np.complex128)]
+        for qubit_coupler in self.basis_gates[1]:
+            gate_errors = two_qubit_gate_error_instructions.setdefault(qubit_coupler, {})
+            missing = [
+                (q0, q1) for q0, neighbours in connectivity_map.items() for q1 in neighbours if q0 < q1 and (q0, q1) not in gate_errors and (q1, q0) not in gate_errors
+            ]
+            if missing:
+                self.logger.warning("No {} gate errors found for qubit pairs {} and are treated as noise less gates".format(qubit_coupler, missing))
+            for q0, q1 in missing:
+                gate_errors[(q0, q1)] = {"qubit_channel" : no_noise_channels}
+                gate_errors[(q1, q0)] = {"qubit_channel" : no_noise_channels}
+        return two_qubit_gate_error_instructions
 
     def _extract_measurement_errors(self,
                                     data:list,
@@ -913,6 +947,10 @@ class BuildModel:
         self.logger.info("Completed building Noise Operators for Two Qubit Gate Errors.\nExtracting Measurement Errors.")
         self.logger.info("Preparing Qubit Connectivity Map for Requested Qubits")
         connectivity_map = self._create_connectivity_map(two_qubit_gate_error_instructions, self.use_qubits)
+        two_qubit_gate_error_instructions = self._fill_missing_coupler_error(
+            two_qubit_gate_error_instructions,
+            connectivity_map
+        )
         self.logger.info("Qubit Connectivity Map Prepared.")
         self.logger.info("Returning Single Qubit Error Instructions, Two Qubit Gate Error Instructions, Measurement Errors and Connectivity Map.")
         if self.use_qubits != list(range(self.num_qubits)):

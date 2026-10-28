@@ -133,14 +133,14 @@ class RunOnHardware:
             "cz": lambda p, q: qc.cz(q[0], q[1]),
             "rzz": lambda p, q: qc.rzz(p, q[0], q[1])
         }
-        self.qubit_list_per_circuit.append(list(range(circuit.num_qubits)))
+        self.qubit_list_per_circuit.append(list(circuit.qubit_layout))
         for inst in instructions:
             gate, qubits, params = inst
             try:
                 instruction_map[gate](params, qubits)
             except KeyError:
                 raise ValueError(f"The gate '{gate}' is not supported on the backend '{self.backend}'. Please check the backend's basis gates.")
-        qc.measure(measure_qubits, measure_qubits)
+        qc.measure(measure_qubits, list(range(len(measure_qubits))))
         self.circuit_list.append(qc)
     
     def setup_circuits(self)->None:
@@ -161,6 +161,7 @@ class RunOnHardware:
         Method that removes any previous circuits stored in the object.
         """
         self.circuit_list = []
+        self.qubit_list_per_circuit = []
     
     def run(self)->str:
         """

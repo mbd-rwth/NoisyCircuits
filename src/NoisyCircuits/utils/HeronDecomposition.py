@@ -141,7 +141,20 @@ class HeronDecomposition(Decomposition):
             forward_swaps, reverse_swaps, phys_control, phys_target = self.qubit_coupling.generate_swap_sequence(logical_control=qubit1, logical_target=qubit2)
             for swap in forward_swaps:
                 self.apply_swap_decomposition(qubit1=swap[0], qubit2=swap[1])
-            self.instruction_list.append(["rzz", [phys_control, phys_target], theta])
+            if self.use_fractional:
+                self.instruction_list.append(["rzz", [phys_control, phys_target], theta])
+            else:
+               self.RZ(np.pi/2, phys_target)
+               self.SX(phys_target)
+               self.RZ(np.pi, phys_target)
+               self.CZ(phys_control, phys_target)
+               self.SX(phys_target)
+               self.RZ(theta-np.pi, phys_target)
+               self.SX(phys_target)
+               self.RZ(np.pi, phys_target)
+               self.CZ(phys_control, phys_target)
+               self.SX(phys_target)
+               self.RZ(np.pi/2, phys_target)
             for swap in reverse_swaps:
                 self.apply_swap_decomposition(qubit1=swap[0], qubit2=swap[1])
 
