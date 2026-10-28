@@ -21,7 +21,7 @@ import numpy as np
 from collections import defaultdict
 import logging
 from joblib import Parallel, delayed
-from NoisyCircuits.utils.QubitOptimizer import select_and_relabel
+from NoisyCircuits.utils.QubitOptimizer import select_and_relabel, connected_components
 from os import cpu_count
 
 def _map_instruction_qubits(instrs, gate_qubits)->list:
@@ -909,8 +909,17 @@ class BuildModel:
         Raises
         ------
         ValueError
-            If the noise model does not contain information regarding the specified basis gates.
+            - If the noise model does not contain data for the required qubits due to not existing on the physcial device.
+            - If the noise model does not contain information regarding the specified basis gates.
         """
+        device_qubits = {
+            q for entry in self.noise_model["errors"] for gate_qubits in entry.get("gate_qubits", []) for q in gate_qubits
+        }
+        unknown_qubits = [
+            q for q in self.use_qubits if q not in device_qubits
+        ]
+        if unknown_qubits:
+            raise ValueError("Noise model has no data for qubits {} and the qubits may not exist on the device".format(unknown_qubits))
         single_qubit_errors = self._extract_single_qubit_qerrors(
             self.noise_model["errors"],
             self.basis_gates[0],
@@ -947,6 +956,11 @@ class BuildModel:
         self.logger.info("Completed building Noise Operators for Two Qubit Gate Errors.\nExtracting Measurement Errors.")
         self.logger.info("Preparing Qubit Connectivity Map for Requested Qubits")
         connectivity_map = self._create_connectivity_map(two_qubit_gate_error_instructions, self.use_qubits)
+        components = connected_components(connectivity_map)
+        if len(components) > 1:
+            raise ValueError(
+                "Qubits {} are not connected on device".format((list(self.use_qubits), components))
+            )
         two_qubit_gate_error_instructions = self._fill_missing_coupler_error(
             two_qubit_gate_error_instructions,
             connectivity_map

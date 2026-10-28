@@ -81,6 +81,24 @@ def select_and_relabel(
     ]
     return single, double, measurement, conn, coupling
 
+def connected_components(
+        connectivity : dict
+    ) -> list[list[int]]:
+    seen, components = set(), []
+    for start in connectivity:
+        if start in seen:
+            continue
+        seen.add(start)
+        component, stack = [start], [start]
+        while stack:
+            for v in connectivity[stack.pop()]:
+                if v not in seen:
+                    seen.add(v)
+                    component.append(v)
+                    stack.append(v)
+        components.append(sorted(component))
+    return components
+
 def remove_couplers(
         connectivity : dict,
         coupling_map : list[tuple[int, int]],

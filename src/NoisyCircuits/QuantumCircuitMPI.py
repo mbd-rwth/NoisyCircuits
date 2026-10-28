@@ -275,24 +275,52 @@ class QuantumCircuitMPI:
             except:
                 print("No instruction list found for given decomposition. Please import a circuit.")
 
-    def _check_gates_in_noise_model(self) -> None:
+    def _check_gates_in_noise_model(
+            self,
+            instruction_list : list[str, tuple[int], float | np.ndarray]
+    ) -> None:
         """
         Helper method to check if the gates used in the imported quantum circuit are supported by the noise model.
 
+        Parameters
+        ----------
+        instruction_list : list[str, tuple[int], float | np.ndarray]
+            Instructions to build the quantum circuit for simulation with gate name, qubit indices and parameters retreived from an OpenQASM File.
+        
         Raises
         ------
         ValueError
-            If any gates used in the quantum circuit are not supported by the noise model.
+            If any gates or qubit pairs in qubit couplers used in the quantum circuit are not supported by the noise model.
         """
-        single_qubit_gates_in_model = self.single_qubit_error[0].keys()
-        two_qubit_gates_in_model = self.two_qubit_error.keys()
-        gate_list = [gate for sublist in [single_qubit_gates_in_model, two_qubit_gates_in_model] for gate in sublist]
-        unsupported_gates = []
-        for instruction in self.instruction_list:
-            if instruction[0] not in gate_list and instruction[0] != "unitary":
-                unsupported_gates.append(instruction[0])
-        if len(unsupported_gates) != 0:
-            raise ValueError("The following gates are unsupported by the noise model: {}\nSupported gate list: {}".format(set(unsupported_gates), gate_list))
+        problems = []
+        for gate, qubits, _ in instruction_list:
+            if any(q < 0 or q >= self.num_qubits for q in qubits):
+                problems.append(
+                    "Gate - {}, Qubit index (or indices) {} out of range.".format(gate, qubits)
+                )
+            elif gate == "unitary":
+                continue
+            elif qubits[0] == qubits[1]:
+                if gate not in self.single_qubit_error.get(qubits[0], {}):
+                    problems.append(
+                        "Gate {} not found in single qubit noise model for qubit {}.".format(gate, qubits[0])
+                    )
+            elif gate not in self.two_qubit_error:
+                problems.append(
+                    "Gate {} not found in two qubit noise model for all qubit pairs".format(gate)
+                )
+            elif tuple(qubits) not in self.two_qubit_error.get(gate, {}):
+                if tuple(qubits[::-1]) in self.two_qubit_error.get(gate, {}):
+                    problems.append(
+                        "Gate {} on qubit pair {} has a device directionality of {}".format(gate, tuple(qubits), tuple(qubits[::-1]))
+                    )
+                else:
+                    problems.append(
+                        "Gate {} on qubit pair {} has no noise model".format(gate, tuple(qubits))
+                    )
+        if problems:
+            print_cutoff = "\n ....... And {} more problems found!".format(len(problems) - 10) if len(problems) > 10 else ""
+            raise ValueError("Imported Circuit cannot be simulated with the given noise model and additional device parameters.\n " + " \n ".join(problems[:10]) + print_cutoff)
 
     def read_openqasm(
             self,
@@ -309,24 +337,17 @@ class QuantumCircuitMPI:
         append_to_circuit : bool (Optional)
             A flag to determine whether add the imported circuit to the existing circuit or replace the existing circuit. (Defaults to True)
         """
-        try:
+        container = self._gate_decomposition if self._gate_decomposition is not None else self
+        if self._rank == 0:
             parser = Parser(
-                file_path = file_path,
-                instruction_list = self._gate_decomposition.instruction_list,
-                append_to_circuit = append_to_circuit,
-                basis_gates = self.basis_gates
+                file_path,
+                list(getattr(container, "instruction_list", [])),
+                append_to_circuit,
+                self.basis_gates
             )
-            self._gate_decomposition.instruction_list = parser.parse()
-        except:
-            self.instruction_list = []
-            parser = Parser(
-                file_path = file_path,
-                instruction_list = self.instruction_list,
-                append_to_circuit = append_to_circuit,
-                basis_gates = self.basis_gates
-            )
-            self.instruction_list = parser.parse()
-        self._check_gates_in_noise_model()
+            instruction_list = parser.parse()
+            self._check_gates_in_noise_model(instruction_list)
+            container.instruction_list = instruction_list
 
     def read_from_qiskit():
         raise NotImplementedError()
