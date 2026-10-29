@@ -99,11 +99,14 @@ std::vector<complex128> run_single_trajectory(const std::list<ItemEntry>& instru
     return trajectory_state;
 }
 
-std::vector<double> run_trajectories_in_rank(std::list<ItemEntry>& instruction_list, std::vector<noise_map>& single_qubit_instructions, noise_map2q two_qubit_instructions, std::size_t num_qubits, int trajectories_on_rank, cuint num_threads, int rank){
+std::vector<double> run_trajectories_in_rank(std::list<ItemEntry>& instruction_list, std::vector<noise_map>& single_qubit_instructions, noise_map2q two_qubit_instructions, std::size_t num_qubits, int trajectories_on_rank, int total_trajectories, cuint num_threads, int rank, int size){
     set_num_threads(num_threads);
     std::unordered_map<std::string, void(*)(complex128* __restrict__, const std::size_t, const std::size_t, const std::size_t, const double, const matrix&, const std::vector<std::size_t>&, cuint)> gate_map = gate_function_mapper();
     std::unordered_map<std::string, void(*)(complex128* __restrict__, const std::size_t, const std::size_t, const std::size_t, const std::vector<matrix>&, std::mt19937_64&)> noise_function_map = noise_function_mapper();
-    int base_seed = 42 + rank * trajectories_on_rank;
+    const int p = total_trajectories / size;
+    const int q = total_trajectories % size;
+    const int offset = rank * p + std::min(rank, q);
+    cuint base_seed = 42 + offset;
     std::size_t dim = std::size_t{1} << num_qubits;
     std::vector<double> local_sum(dim, 0.0);
     for (int traj = 0; traj < trajectories_on_rank; ++traj){
@@ -130,7 +133,7 @@ std::vector<double> execute(std::list<ItemEntry>& instruction_list, std::vector<
         trajectory_counts = distribute_trajectory(total_trajectories, num_ranks);
     }
     int my_trajectories = scatter_trajectory_count(trajectory_counts, root, comm);
-    std::vector<double> local_sum = run_trajectories_in_rank(instruction_list, single_qubit_instructions, two_qubit_instructions, num_qubits, my_trajectories, num_threads, rank);
+    std::vector<double> local_sum = run_trajectories_in_rank(instruction_list, single_qubit_instructions, two_qubit_instructions, num_qubits, my_trajectories, total_trajectories, num_threads, rank, num_ranks);
     std::vector<double> total_sum = reduce_final_result(local_sum, root, comm);
     if (rank == root && total_trajectories > 0){
         double divide_val = 1.0 / total_trajectories;

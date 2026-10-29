@@ -122,6 +122,31 @@ class CreateNoiseModel:
         max_depol_prob = 4**n / (4**n - 1)
         return min(max(0, depol_prob), max_depol_prob)
 
+    def _parse_coupler_values(
+            self,
+            entry : str
+        ) -> dict:
+        """
+        Method to parse the entry of a qubit coupler from the calibration data
+
+        Parameters
+        ----------
+        entry : str
+            Qubit coupler entry of a row in the calibration data with empty items read as NaN.
+
+        Returns
+        -------
+        dict
+            Mapping from the target qubit to the value, or empty for no data
+        """
+        if not isinstance(entry, str) or entry.strip() == "":
+            return {}
+        values = {}
+        for item in entry.split(";"):
+            target_qubit, value = item.split(":")
+            values[int(target_qubit)] = float(value)
+        return values
+    
     def create_noise_model(self)->dict:
         """
         Method to create the noise model from the calibration data.
@@ -151,7 +176,7 @@ class CreateNoiseModel:
             p01 = float(row["Prob meas 0 prep 1"])
             p10 = float(row["Prob meas 1 prep 0"])
             single_qubit_gate_length = int(row["Single Qubit Gate Length (ns)"]) * 1e-9
-            two_qubit_gate_length = row["Gate Length (ns)"].split(";")
+            two_qubit_gate_length = self._parse_coupler_values(row["Gate Length (ns)"])
             readout_matrix = np.array([[1 - p10, p10], [p01, 1 - p01]])
             noise_model.add_readout_error(ReadoutError(readout_matrix), [qubits[i]])
             for gate in self.basis_gates[0]:
@@ -164,127 +189,51 @@ class CreateNoiseModel:
                 depol_error = depolarizing_error(depol_prob, 1)
                 noise_model.add_quantum_error(depol_error.compose(thermal_error), gate, [qubits[i]])
 
+            qubit_coupler_errors = {
+                gate : self._parse_coupler_values(
+                    row["{} Error".format(gate)]
+                ) for gate in self.basis_gates[1]
+            }
             for gate in self.basis_gates[1]:
-                gate_error = row["{} Error".format(gate)]
-                try:
-                    connected_qubits_errors = gate_error.split(";")
-                except:
-                    connected_qubits_errors = []
-                if len(connected_qubits_errors) == len(two_qubit_gate_length):
-                    for j in range(len(connected_qubits_errors)):
-                        target_qubits, target_error = connected_qubits_errors[j].split(":")
-                        gate_target, gate_length = two_qubit_gate_length[j].split(":")
-                        if int(target_qubits) != int(gate_target):
-                            print("Found Mismazch in target qubits for gate {} for qubits {} and {}".format(gate, target_qubits, gate_target))
-                        target_qubits = int(target_qubits)
-                        gate_time = int(gate_length) * 1e-9
-                        gate_error = float(target_error)
-                        thermal_error = thermal_relaxation_error(t1[target_qubits], t2[target_qubits], gate_time).tensor(
-                            thermal_relaxation_error(t1[i], t2[i], gate_time)
+                alt_error = [
+                    qubit_coupler_errors[g] for g in self.basis_gates[1] if g != gate and qubit_coupler_errors[g]
+                ]
+                for target_qubit, gate_length in two_qubit_gate_length.items():
+                    if target_qubit in qubit_coupler_errors[gate]:
+                        gate_error = qubit_coupler_errors[gate][target_qubit]
+                    elif alt_error and target_qubit in alt_error[0]:
+                        gate_error = alt_error[0][target_qubit]
+                        print(
+                            "No error data for gate {} on qubits ({}, {}). Using error from other qubit couplers for the qubit pair.".format(gate, qubits[i], target_qubit)
                         )
-                        depol_prob = self._compute_depolarizing_probability(gate_error, average_gate_fidelity(thermal_error), 4)
-                        depol_error = depolarizing_error(depol_prob, 2)
-                        noise_model.add_quantum_error(depol_error.compose(thermal_error), gate, [qubits[i], qubits[target_qubits]])
-                elif len(connected_qubits_errors) != 0:
-                    applied_qubits = []
-                    qubit_connections = [idx.split(":")[0] for idx in two_qubit_gate_length]
-                    for j in range(len(connected_qubits_errors)):
-                        target_qubits, target_error = connected_qubits_errors[j].split(":")
-                        gate_target, gate_time = two_qubit_gate_length[j].split(":")
-                        if int(gate_target) != int(target_qubits):
-                            for k in range(len(qubit_connections)):
-                                gate_target, gate_time = two_qubit_gate_length[k].split(":")
-                                if int(gate_target) == int(target_qubits):
-                                    break
-                        target_qubits = int(target_qubits)
-                        gate_time = int(gate_time) * 1e-9
-                        gate_error = float(target_error)
-                        applied_qubits.append(target_qubits)
-                        thermal_error = thermal_relaxation_error(t1[target_qubits], t2[target_qubits], gate_time).tensor(
-                            thermal_relaxation_error(t1[i], t2[i], gate_time)
-                        )
-                        depol_prob = self._compute_depolarizing_probability(gate_error, average_gate_fidelity(thermal_error), 4)
-                        depol_error = depolarizing_error(depol_prob, 2)
-                        noise_model.add_quantum_error(depol_error.compose(thermal_error), gate, [qubits[i], qubits[target_qubits]])
-                    for idx in qubit_connections:
-                        idx = int(idx)
-                        if idx not in applied_qubits:
-                            target_qubits = idx
-                            gate_time = two_qubit_gate_length[qubit_connections.index(str(idx))].split(":")[1]
-                            gate_time = int(gate_time) * 1e-9
-                            thermal_error = thermal_relaxation_error(t1[target_qubits], t2[target_qubits], gate_time).tensor(
-                                thermal_relaxation_error(t1[i], t2[i], gate_time)
-                            )
-                            depol_prob = self._compute_depolarizing_probability(1.0, average_gate_fidelity(thermal_error), 4)
-                            noise_model.add_quantum_error(depol_error.compose(thermal_error), gate, [qubits[i], qubits[target_qubits]])
-                else:
-                    print("No Error Data found for gate {} on qubit {}".format(gate, qubits[i]))
-                    applied_qubits = []
-                    if len(self.basis_gates[1]) > 1:
-                        print("Attempting to apply error data from other two qubit gates for qubit {}".format(qubits[i]))
-                        for g in self.basis_gates[1]:
-                            if g == gate:
-                                continue
-                            gate_error = row["{} Error".format(g)]
-                            try:
-                                connected_qubits_errors = gate_error.split(";")
-                            except:
-                                connected_qubits_errors = []
-                            if len(connected_qubits_errors) == len(two_qubit_gate_length) or len(connected_qubits_errors) != 0:
-                                break
-                        if len(connected_qubits_errors) != 0:
-                            qubit_connections = [idx.split(":")[0] for idx in two_qubit_gate_length]
-                            for j in range(len(connected_qubits_errors)):
-                                target_qubits, target_error = connected_qubits_errors[j].split(":")
-                                for k in range(len(two_qubit_gate_length)):
-                                    gate_target, gate_time = two_qubit_gate_length[k].split(":")
-                                    if int(gate_target) == int(target_qubits):
-                                        break
-                                target_qubits = int(target_qubits)
-                                gate_time = int(gate_time) * 1e-9
-                                gate_error = float(target_error)
-                                applied_qubits.append(target_qubits)
-                                thermal_error = thermal_relaxation_error(t1[target_qubits], t2[target_qubits], gate_time).tensor(
-                                    thermal_relaxation_error(t1[i], t2[i], gate_time)
-                                )
-                                depol_prob = self._compute_depolarizing_probability(gate_error, average_gate_fidelity(thermal_error), 4)
-                                depol_error = depolarizing_error(depol_prob, 2)
-                                noise_model.add_quantum_error(depol_error.compose(thermal_error), gate, [qubits[i], qubits[target_qubits]])
-                            for idx in qubit_connections:
-                                if int(idx) not in applied_qubits:
-                                    target_qubits = int(idx)
-                                    gate_time = two_qubit_gate_length[qubit_connections.index(idx)].split(":")[1]
-                                    gate_time = int(gate_time) * 1e-9
-                                    thermal_error = thermal_relaxation_error(t1[t1[int(idx)]], t2[t2[int(idx)]], gate_time).tensor(
-                                        thermal_relaxation_error(t1[i], t2[i], gate_time)
-                                    )
-                                    depol_prob = self._compute_depolarizing_probability(1.0, average_gate_fidelity(thermal_error), 4)
-                                    depol_error = depolarizing_error(depol_prob, 2)
-                                    noise_model.add_quantum_error(depol_error.compose(thermal_error), gate, [qubits[i], qubits[int(idx)]])
-                        else:
-                            print("No error data found for any two qubit gates on qubit {}. Applying maximum error rate for gate {}".format(qubits[i], gate))
-                            for j in range(len(two_qubit_gate_length)):
-                                target_qubits, gate_time = two_qubit_gate_length[j].split(":")
-                                target_qubits = int(target_qubits)
-                                gate_time = int(gate_time) * 1e-9
-                                thermal_error = thermal_relaxation_error(t1[target_qubits], t2[target_qubits], gate_time).tensor(
-                                    thermal_relaxation_error(t1[i], t2[i], gate_time)
-                                )
-                                depol_prob = self._compute_depolarizing_probability(1.0, average_gate_fidelity(thermal_error), 4)
-                                depol_error = depolarizing_error(depol_prob, 2)
-                                noise_model.add_quantum_error(depol_error.compose(thermal_error), gate, [qubits[i], qubits[target_qubits]])
                     else:
-                        print("Only a single two qubit gate found in basis gates. Applying maximum error rate for gate {} on qubit {}".format(gate, qubits[i]))
-                        for j in range(len(two_qubit_gate_length)):
-                            target_qubits, gate_time = two_qubit_gate_length[j].split(":")
-                            target_qubits = int(target_qubits)
-                            gate_time = int(gate_time) * 1e-9
-                            thermal_error = thermal_relaxation_error(t1[target_qubits], t2[target_qubits], gate_time).tensor(
-                                thermal_relaxation_error(t1[i], t2[i], gate_time)
-                            )
-                            depol_prob = self._compute_depolarizing_error(1.0, average_gate_fidelity(thermal_error), 4)
-                            depol_error = depolarizing_error(depol_prob, 2)
-                            noise_model.add_quantum_error(depol_error.compose(thermal_error), gate, [qubits[i], qubits[target_qubits]])
+                        gate_error = 1.0
+                        print(
+                            "No error data found for any gate on the qubit coupler for pair ({}, {}), using maximum error.".format(qubits[i], target_qubit)
+                        )
+                    gate_time = gate_length * 1e-9
+                    thermal_error = thermal_relaxation_error(
+                        t1[target_qubit],
+                        t2[target_qubit],
+                        gate_time
+                    ).tensor(
+                        thermal_relaxation_error(
+                            t1[i],
+                            t2[i],
+                            gate_time
+                        )
+                    )
+                    depol_prob = self._compute_depolarizing_probability(
+                        gate_error,
+                        average_gate_fidelity(thermal_error),
+                        4
+                    )
+                    depol_error = depolarizing_error(depol_prob, 2)
+                    noise_model.add_quantum_error(
+                        depol_error.compose(thermal_error),
+                        gate,
+                        [qubits[i], qubits[target_qubit]]
+                    )
         return noise_model.to_dict(serializable=True)
 
 
