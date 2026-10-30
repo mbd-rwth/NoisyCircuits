@@ -83,20 +83,17 @@ def _ensure_ctpt(kraus_ops:list)->bool:
     -------
     bool
         True if the Kraus operators form a CPTP map, False otherwise.
-    
-    Raises
-    ------
-    Warning
-        If the Kraus operators do not form a CPTP map.
     """
     mat = np.zeros(kraus_ops[0].shape, dtype=np.complex128)
     for op in kraus_ops:
         mat += np.dot(op.conj().T, op)
     return np.allclose(mat, np.eye(mat.shape[0], dtype=np.complex128))
 
-def _drop_errors(probabilities:list,
-                instructions:list,
-                threshold:float)->tuple[list, list]:
+def _drop_errors(probabilities : list,
+                instructions : list,
+                kraus : list,
+                threshold : float
+            ) -> tuple[list, list]:
     """
     Filters out errors based on a probability threshold for single qubit error models.
 
@@ -106,6 +103,8 @@ def _drop_errors(probabilities:list,
         List of error probabilities.
     instructions : list
         List of error instructions.
+    kraus : list
+        List of Kraus operator sets of each instruction
     threshold : float
         Probability threshold for filtering.
 
@@ -119,10 +118,11 @@ def _drop_errors(probabilities:list,
     mask = probs >= threshold
     filtered_probs = probs[mask]
     filtered_instrs = instrs[mask]
+    filtered_kraus_instrs = [k  for k, keep in zip(kraus, mask) if keep]
     filtered_probs /= np.sum(filtered_probs)
     filtered_instrs = list(map(str, filtered_instrs))
     filtered_probs = list(map(float, filtered_probs))
-    return filtered_probs, filtered_instrs
+    return filtered_probs, filtered_instrs, filtered_kraus_instrs
 
 def _convert_op_to_ctpt(ops:list[np.ndarray],
                         scale:float)->list[np.ndarray]:
@@ -217,7 +217,7 @@ def _post_process_single_qubit_errors_single_qubit(qubit_errors:dict,
         "y" : lambda x, k_ops: _apply_operation(x, [instruction_map["y"]]),
         "z" : lambda x, k_ops: _apply_operation(x, [instruction_map["z"]]),
         "reset" : lambda x, k_ops: _apply_operation(x, [instruction_map["K0"], instruction_map["K1"]]),
-        "kraus" : lambda x, k_ops: _apply_local_kraus_channels(x, k_ops)
+        "kraus" : lambda x, k_ops: _apply_local_kraus_channels(x, next(k_ops))
     }
     qubit_errors_processed = {}
     for gate in qubit_errors.keys():
@@ -225,154 +225,132 @@ def _post_process_single_qubit_errors_single_qubit(qubit_errors:dict,
         probabilities = qubit_errors[gate]["probabilities"]
         kraus_ops = qubit_errors[gate]["kraus"]
         if threshold is not None:
-            probabilities, instructions = _drop_errors(
-                                                    probabilities, 
-                                                    instructions,
-                                                    threshold
+            probabilities, instructions, kraus_ops = _drop_errors(
+                                                        probabilities, 
+                                                        instructions,
+                                                        kraus_ops,
+                                                        threshold
                                                     )
             assert len(probabilities) == len(instructions), "Probabilities and instructions must have the same length after filtering."
             assert np.allclose(np.sum(probabilities), 1), "Filtered probabilities must sum to 1."
         operators = []
-        for instr, prob in zip(instructions, probabilities):
+        for instr, prob, kraus_term in zip(instructions, probabilities, kraus_ops):
             instruction = instr.split("-")
+            kraus_term = iter(kraus_term)
             op = [np.eye(2, dtype=np.complex128)]
             for name in instruction:
-                op = operator_function_map[name](op, kraus_ops)
+                op = operator_function_map[name](op, kraus_term)
             operators.extend(_convert_op_to_ctpt(op, np.sqrt(prob)))
         if not _ensure_ctpt(operators):
-            print(f"Warning: Extended Kraus operators for qubit do not form a CPTP map.")
+            raise ValueError(f"Processed Kraus operators for qubit {qubit_index} do not form a CPTP map.")
         qubit_errors_processed[gate] = {
             "qubit_channel": operators
         }
     return qubit_errors_processed
 
-def _get_two_qubit_gate_noise_operators_single_pair(num_qubits:int, 
-                                                    qpair:tuple[int, int], 
-                                                    error_data:dict, 
-                                                    instruction_map:dict
-                                                )->dict:
+def _two_qubit_instruction_to_operator(
+        instruction : dict,
+        qpair : tuple[int],
+        instruction_map : dict
+) -> list[np.ndarray]:
     """
-    Helper method to post-process the two-qubit gate errors for a single qubit pair on a single core.
+    Function to convert a noise instruction to a noise operator for a two qubit quantum gate. This follows a little endian ordering on the qubit pairs according to the noise dict definition from qiskit.
 
     Parameters
     ----------
-    num_qubits : int
-        Total number of qubits.
-    qpair : tuple[int, int]
-        Tuple of the two qubits in the pair.
-    error_data : dict
-        Dictionary containing the error data for the two-qubit gate.
+    instruction : dict
+        Noise instructions as a dictionary with qubits mapped to hardware
+    qpair : tuple[int]
+        The qubits on which the two qubit gate acts on
     instruction_map : dict
-        Map of instruction names to their matrix representations.
+        Map of instruction name to operator
 
     Returns
     -------
-    dict
-        Dictionary containing the processed two-qubit gate error operators for the specific qubit pair.
+    list[np.ndarray]
+        List of local operators for the instruction
+
+    Raises
+    ------
+    ValueError
+        If the instruction is not supported
     """
-    full_instructions = error_data["instructions"]
-    probabilities = error_data["probabilities"]
-    probabilities = np.array(probabilities)
+    name = instruction["name"]
+    qubits = instruction["qubits"]
+    identity = instruction_map["id"]
+    embed = lambda op, q: np.kron(op, identity) if q == qpair[0] else np.kron(identity, op)
+    if name == "pauli":
+        label = instruction["params"][0]
+        op = np.eye(4, dtype=np.complex128)
+        for i, q in enumerate(qubits):
+            op = np.dot(embed(instruction_map[label[len(label) - 1 - i].lower()], q), op)
+        return[op]
+    if name == "kraus" and len(qubits) == 2:
+        kraus_ops = _extract_kraus([instruction])
+        if tuple(qubits) == tuple(qpair):
+            swap = np.eye(4, dtype=np.complex128)[[0, 2, 1, 3]]
+            kraus_ops = [np.dot(swap, np.dot(op, swap)) for op in kraus_ops]
+        return kraus_ops
+    if len(qubits) != 1:
+        raise ValueError("Noise instruction {} on qubits {} is not supported for two-qubit gate errors".format(name, qubits))
+    if name == "kraus":
+        local_ops = _extract_kraus([instruction])
+    elif name == "reset":
+        local_ops = [instruction_map["K0"], instruction_map["K1"]]
+    elif name in ("id", "x", "y", "z"):
+        local_ops = [instruction_map[name]]
+    else:
+        raise ValueError("Noise instruction {} on qubits {} is not supported for the two-qubit gate errors".format(name, qubits))
+    return [embed(op, qubits[0]) for op in local_ops]
+
+def _get_two_qubit_gate_noise_operators_single_pair(
+        qpair : tuple[int],
+        error_data : dict,
+        instruction_map : dict
+) -> dict:
+    """
+    Function to post-process and retreive the error operators for two qubit gates for a single qubit pair
+
+    Parameters
+    ----------
+    qpair : tuple[int]
+        Tuple of the two qubits in the qubit coupler gate pair
+    error_data : dict
+        Dictionary containing the error data for two qubit gates
+    instruction_map : dict
+        Map of instruction name to operator
+
+    Returns
+    -------
+    Dictionary containing the processed two qubit error operators for the specific qubit pair for a two qubit gate
+
+    Raises
+    ------
+    ValueError
+        If the processed error operators do not form a CPTP map
+    """
+    probabilities = np.array(error_data["probabilities"], dtype=np.float64)
     probabilities /= np.sum(probabilities)
-    probabilities = probabilities.tolist()
-    kraus_ops = error_data["kraus"]
-    error_operators = []
-    for instruction,prob in zip(full_instructions, probabilities):
-        qubits = instruction[-1]
-        if len(instruction) > 2:
-            major_inst = instruction[0]
-            minor_inst = instruction[1]
-        else:
-            major_inst = "II"
-            minor_inst = instruction[0]
-        q0_ops = instruction_map[major_inst[0].lower()]
-        q1_ops = instruction_map[major_inst[1].lower()]
-        minor_ops = minor_inst.split("-")
-        if "kraus" not in minor_ops:
-            if "reset" not in minor_ops:
-                q0_ops = np.dot(instruction_map[minor_ops[0]], q0_ops)
-                q1_ops = np.dot(instruction_map[minor_ops[1]], q1_ops)
-                k_op = np.kron(q0_ops, q1_ops)
-                error_operators.append(np.sqrt(prob) * k_op)
-            else:
-                if minor_ops[0] == "reset" and minor_ops[1] == "reset":
-                    q0_ops1 = np.dot(instruction_map["K0"], q0_ops)
-                    q0_ops2 = np.dot(instruction_map["K1"], q0_ops)
-                    q1_ops1 = np.dot(instruction_map["K0"], q1_ops)
-                    q1_ops2 = np.dot(instruction_map["K1"], q1_ops)
-                    k_op1 = np.kron(q0_ops1, q1_ops1)
-                    k_op2 = np.kron(q0_ops2, q1_ops2)
-                    k_op3 = np.kron(q0_ops1, q1_ops2)
-                    k_op4 = np.kron(q0_ops2, q1_ops1)
-                    error_operators.extend(np.sqrt(prob) * op for op in [k_op1, k_op2, k_op3, k_op4])
-                elif minor_ops[0] == "reset":
-                    q0_op1 = np.dot(instruction_map["K0"], q0_ops)
-                    q0_op2 = np.dot(instruction_map["K1"], q0_ops)
-                    q1_ops = np.dot(instruction_map[minor_ops[1]], q1_ops)
-                    k_op1 = np.kron(q0_op1, q1_ops)
-                    k_op2 = np.kron(q0_op2, q1_ops)
-                    error_operators.extend(np.sqrt(prob) * op for op in [k_op1, k_op2])
-                else:
-                    q0_ops = np.dot(instruction_map[minor_ops[0]], q0_ops)
-                    q1_op1 = np.dot(instruction_map["K0"], q1_ops)
-                    q1_op2 = np.dot(instruction_map["K1"], q1_ops)
-                    k_op1 = np.kron(q0_ops, q1_op1)
-                    k_op2 = np.kron(q0_ops, q1_op2)
-                    error_operators.extend(np.sqrt(prob) * op for op in [k_op1, k_op2])
-        else:
-            if minor_ops[0] == "kraus" and minor_ops[1] == "kraus":
-                kraus_ops_for_q0 = kraus_ops[qubits[0]]
-                kraus_ops_for_q1 = kraus_ops[qubits[1]]
-                kraus_operations_for_q0 = []
-                kraus_operations_for_q1 = []
-                for kraus_op in kraus_ops_for_q0:
-                    kraus_operations_for_q0.append(np.dot(kraus_op, q0_ops))
-                for kraus_op in kraus_ops_for_q1:
-                    kraus_operations_for_q1.append(np.dot(kraus_op, q1_ops))
-                for kraus_op0 in kraus_operations_for_q0:
-                    for kraus_op1 in kraus_operations_for_q1:
-                        k_op = np.kron(kraus_op0, kraus_op1)
-                        error_operators.append(np.sqrt(prob) * k_op)
-            elif minor_ops[0] == "kraus":
-                kraus_ops_for_q0 = kraus_ops[qubits[0]]
-                kraus_operations_for_q0 = []
-                for kraus_op in kraus_ops_for_q0:
-                    kraus_operations_for_q0.append(np.dot(kraus_op, q0_ops))
-                if minor_ops[1] == "reset":
-                    q1_op1 = np.dot(instruction_map["K0"], q1_ops)
-                    q1_op2 = np.dot(instruction_map["K1"], q1_ops)
-                    for kraus_op in kraus_operations_for_q0:
-                        k_op1 = np.kron(kraus_op, q1_op1)
-                        k_op2 = np.kron(kraus_op, q1_op2)
-                        error_operators.extend(np.sqrt(prob) * op for op in [k_op1, k_op2])
-                else:
-                    q1_ops = np.dot(instruction_map[minor_ops[1]], q1_ops)
-                    for kraus_op in kraus_operations_for_q0:
-                        k_op = np.kron(kraus_op, q1_ops)
-                        error_operators.append(np.sqrt(prob) * k_op)
-            else:
-                kraus_ops_for_q1 = kraus_ops[qubits[1]]
-                kraus_operations_for_q1 = []
-                for kraus_op in kraus_ops_for_q1:
-                    kraus_operations_for_q1.append(np.dot(kraus_op, q1_ops))
-                if minor_ops[0] == "reset":
-                    q0_op1 = np.dot(instruction_map["K0"], q0_ops)
-                    q0_op2 = np.dot(instruction_map["K1"], q0_ops)
-                    for kraus_op in kraus_operations_for_q1:
-                        k_op1 = np.kron(q0_op1, kraus_op)
-                        k_op2 = np.kron(q0_op2, kraus_op)
-                        error_operators.extend(np.sqrt(prob) * op for op in [k_op1, k_op2])
-                else:
-                    q0_ops = np.dot(instruction_map[minor_ops[0]], q0_ops)
-                    for kraus_op in kraus_operations_for_q1:
-                        k_op = np.kron(q0_ops, kraus_op)
-                        error_operators.append(np.sqrt(prob) * k_op)
-    if not _ensure_ctpt(error_operators):
-        print(f"Warning: Kraus operators for qubit pair {qpair} do not form a CPTP map.")
+    error_ops = []
+    for term, prob in zip(error_data["instructions"], probabilities):
+        term_ops = [np.eye(4, dtype=np.complex128)]
+        for instruction in term:
+            term_ops = _apply_local_kraus_channels(
+                term_ops,
+                _two_qubit_instruction_to_operator(
+                    instruction,
+                    qpair,
+                    instruction_map
+                )
+            )
+        error_ops.extend(_convert_op_to_ctpt(term_ops, np.sqrt(prob)))
+    if not _ensure_ctpt(error_ops):
+        raise ValueError("Kraus Operators from noise instruction for qubit pair {} are not CPTP.".format(qpair))
     two_qubit_gate_error_operators = {
-        "qubit_channel" : error_operators
+        "qubit_channel" : error_ops
     }
     return two_qubit_gate_error_operators
+
 
 
 class BuildModel:
@@ -486,7 +464,7 @@ class BuildModel:
         result = defaultdict(lambda: defaultdict(lambda: {
             "instructions" : [],
             "probabilities": [],
-            "kraus" : None
+            "kraus" : []
         }))
 
         for entry in data:
@@ -515,10 +493,9 @@ class BuildModel:
                         instr_names = "-".join(g["name"] for g in mapped_instrs)
                         result[q][op]["instructions"].append(instr_names)
                         result[q][op]["probabilities"].append(prob)
-                        if result[q][op]["kraus"] is None:
-                            kraus_matrices = _extract_kraus(mapped_instrs)
-                            if kraus_matrices is not None:
-                                result[q][op]["kraus"] = kraus_matrices
+                        result[q][op]["kraus"].append(
+                            [_extract_kraus([g]) for g in mapped_instrs if g["name"] == "kraus"]
+                        )
         return dict(result)
     
     def _extract_two_qubit_errors(self,
@@ -565,8 +542,7 @@ class BuildModel:
                     kraus = _extract_kraus(mapped_instrs)
                     two_qubit_errors[two_qubit_operator][qpair].append({
                         "instructions" : mapped_instrs,
-                        "probability" : prob,
-                        "kraus" : kraus
+                        "probability" : prob
                     })
         for basis_gate in basis_gates:
             two_qubit_errors[basis_gate] = dict(two_qubit_errors[basis_gate])
@@ -584,14 +560,6 @@ class BuildModel:
             "K0" : np.array([[1, 0], [0, 0]], dtype=np.complex128),
             "K1" : np.array([[0, 1], [0, 0]], dtype=np.complex128),
             "i": np.array([[1, 0], [0, 1]], dtype=np.complex128),
-        }
-        self.operator_function_map = {
-            "id" : lambda x, k_ops: _apply_operation(x, [self.instruction_map["id"]]),
-            "x" : lambda x, k_ops: _apply_operation(x, [self.instruction_map["x"]]),
-            "y" : lambda x, k_ops: _apply_operation(x, [self.instruction_map["y"]]),
-            "z" : lambda x, k_ops: _apply_operation(x, [self.instruction_map["z"]]),
-            "reset" : lambda x, k_ops: _apply_operation(x, [self.instruction_map["K0"], self.instruction_map["K1"]]),
-            "kraus" : lambda x, k_ops: _apply_local_kraus_channels(x, k_ops)
         }
 
     def _post_process_single_qubit_errors(self,
@@ -657,76 +625,21 @@ class BuildModel:
             for qpair, error_list in two_qubit_errors[two_qubit_gate].items():
                 instructions = []
                 probabilities = []
-                kraus_ops = []
-                kraus_qubits = set()
-                unique_kraus_per_qubit = {}  # qubit -> unique kraus operators
-                filtered_count = 0
+                filter_count = 0
                 total_count = len(error_list)
                 for error_entry in error_list:
                     prob = error_entry["probability"]
                     if prob < threshold:
-                        filtered_count += 1
+                        filter_count += 1
                         continue
                     probabilities.append(prob)
-                    pauli_instruction = None
-                    pauli_qubits = None
-                    gate_instructions = {}
-                    for inst in error_entry["instructions"]:
-                        inst_name = inst["name"]
-                        inst_qubits = inst.get("qubits", [])
-                        if inst_name == "pauli":
-                            params = inst.get("params", ["II"])
-                            pauli_instruction = params[0] if params else "II"
-                            pauli_qubits = inst_qubits
-                        elif inst_name == "kraus":
-                            kraus_params = inst.get("params", [])
-                            if kraus_params and inst_qubits:
-                                qubit = inst_qubits[0]
-                                if qubit not in unique_kraus_per_qubit:
-                                    unique_kraus_per_qubit[qubit] = kraus_params
-                                    kraus_qubits.add(qubit)
-                            for q in inst_qubits:
-                                gate_instructions[q] = inst_name
-                        else:
-                            for q in inst_qubits:
-                                gate_instructions[q] = inst_name
-                    final_instruction = []
-                    qubits_list = list(qpair)
-                    if pauli_instruction and pauli_qubits:
-                        pauli_map = {}
-                        for i, q in enumerate(pauli_qubits):
-                            if i < len(pauli_instruction):
-                                pauli_map[q] = pauli_instruction[i]
-                        reordered_pauli = ""
-                        for q in qubits_list:
-                            reordered_pauli += pauli_map.get(q, "I")
-                        final_instruction.append(reordered_pauli)
-                    gate_parts = []
-                    for q in qubits_list:
-                        gate_name = gate_instructions.get(q, "id")
-                        gate_parts.append(gate_name)
-                    if gate_parts:
-                        combined_gate = "-".join(gate_parts)
-                        final_instruction.append(combined_gate)
-                    final_instruction.append(qubits_list)
-                    instructions.append(final_instruction)
-                    kraus_ops.append(None)
+                    instructions.append(error_entry["instructions"])
                 if instructions:
-                    if unique_kraus_per_qubit:
-                        unique_kraus_per_qubit_value = [self._extract_kraus_op(inst) for inst in unique_kraus_per_qubit.values()]
-                        unique_kraus_operators = {q: ops for q, ops in zip(unique_kraus_per_qubit.keys(), unique_kraus_per_qubit_value)}
-                        probabilities = np.array(probabilities)
-                        probabilities /= np.sum(probabilities)
-                    else:
-                        unique_kraus_operators = None
                     gate_error_processed[qpair] = {
-                        "instructions": instructions,
-                        "probabilities": probabilities,
-                        "kraus": unique_kraus_operators,
-                        "kraus_qubit": list(kraus_qubits)
+                        "instructions" : instructions,
+                        "probabilities" : probabilities
                     }
-                    self.logger.info(f"Qubit pair {qpair}: {len(instructions)}/{total_count} errors above threshold "
-                    f"({filtered_count} filtered out)")
+                    self.logger.info(f"Qubit pair {qpair}: {len(instructions)}/{total_count} errors above threshold ({filter_count} filtered out)")
             processed_errors[two_qubit_gate] = gate_error_processed
         self.logger.info("Two Qubit Gate errors processed.")
         return processed_errors
@@ -776,7 +689,6 @@ class BuildModel:
         for two_qubit_gate in two_qubit_gate_errors.keys():
             two_qubit_gate_error_operators[two_qubit_gate] = {}
             pair_operators_list = Parallel(n_jobs=use_cores)(delayed(_get_two_qubit_gate_noise_operators_single_pair)(
-                                                        self.num_qubits,
                                                         qpair,
                                                         two_qubit_gate_errors[two_qubit_gate][qpair],
                                                         self.instruction_map
