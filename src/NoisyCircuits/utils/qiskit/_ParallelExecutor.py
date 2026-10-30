@@ -50,11 +50,11 @@ class RemoteExecutor:
         self.noise_function_map = {
             "x": self._apply_single_qubit_noise,
             "sx": self._apply_single_qubit_noise,
-            "rz": self._apply_no_noise,
-            "rx": self._apply_no_noise,
+            "rz": self._apply_single_qubit_noise,
+            "rx": self._apply_single_qubit_noise,
             "cz": self._apply_two_qubit_noise,
             "ecr": self._apply_two_qubit_noise,
-            "rzz": self._apply_no_noise,
+            "rzz": self._apply_two_qubit_noise,
             "unitary": self._apply_no_noise
         }
         self.instruction_map = {

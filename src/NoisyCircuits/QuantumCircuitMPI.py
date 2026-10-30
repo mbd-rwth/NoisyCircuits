@@ -8,6 +8,7 @@ This module allows users to create and simulate quantum circuits with noise mode
 Example:\n
 """
 
+import sys
 import warnings
 import numpy as np
 import simulator_mpi as simulator
@@ -15,6 +16,7 @@ import os
 from collections.abc import Callable
 from NoisyCircuits.utils import BuildModel, Parser, compute_marginal_probs, convert_matrix_to_little_endian, basis_gate_set, QubitLayoutOptimizer, remove_couplers, INTERACTIONS, apply_readout_error
 from joblib.externals.loky import get_reusable_executor
+from types import TracebackType
 
 
 def _launch_rank() -> int:
@@ -22,6 +24,16 @@ def _launch_rank() -> int:
         if var in os.environ:
             return int(os.environ.get(var))
     return 0
+
+def _abort_on_uncaught_exception(
+        exc_type : BaseException,
+        exc_value : BaseException,
+        exc_traceback : TracebackType | None
+) -> None:
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    simulator.abort_mpi(1)
 
 class _NullDecomposition:
     instruction_list = []
@@ -137,6 +149,7 @@ class QuantumCircuitMPI:
         self.verbose = verbose
         self.basis_gates = basis_gate_set[self.qpu]["basis_gates"]
         simulator.initialize_mpi()
+        sys.excepthook = _abort_on_uncaught_exception
         self._rank = _launch_rank()
         if self._rank == 0:
             single_error, double_error, measurement_error, connectivity, qubit_coupling_map = self._build_noise_model(

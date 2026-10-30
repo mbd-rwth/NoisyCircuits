@@ -64,7 +64,7 @@ class RemoteExecutor:
             "rx": self._apply_single_qubit_noise,
             "cz": self._apply_two_qubit_noise,
             "ecr": self._apply_two_qubit_noise,
-            "rzz": self._apply_single_qubit_noise,
+            "rzz": self._apply_two_qubit_noise,
             "unitary": self._no_noise
         }
     

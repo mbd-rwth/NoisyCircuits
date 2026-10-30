@@ -109,6 +109,16 @@ PYBIND11_MODULE(simulator_mpi, m){
         }
     }, "Close MPI session with safety built in for multiple calls");
 
+    m.def("abort_mpi", [](int error_code){
+        int initialized = 0;
+        int finalized = 0;
+        MPI_Initialized(&initialized);
+        MPI_Finalized(&finalized);
+        if (initialized && !finalized){
+            MPI_Abort(MPI_COMM_WORLD, error_code);
+        }
+    }, "Abort MPI Ranks on error out in rank 0", py::arg("error_code") = 1);
+
     m.def("get_mpi_rank", [](){
         int rank = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);

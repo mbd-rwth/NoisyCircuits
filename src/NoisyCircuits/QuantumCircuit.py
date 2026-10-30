@@ -580,9 +580,9 @@ class QuantumCircuit:
             instruction_list = self.instruction_list,
             num_cores = num_cores
         )
-        probs = density_matrix_solver.solve(qubits=qubits)
+        probs = density_matrix_solver.solve(qubits=sorted(qubits))
         if self.sim_backend == "pennylane":
-            probs = probs.reshape([2]*self.num_qubits).transpose(list(range(self.num_qubits))[::-1]).reshape(-1)
+            probs = probs.reshape([2]*len(qubits)).transpose(list(range(len(qubits)))[::-1]).reshape(-1)
         probs = apply_readout_error(
             probs,
             self.measurement_error,

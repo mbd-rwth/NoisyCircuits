@@ -102,5 +102,5 @@ class DensityMatrixSolver:
         if len(trace_qubits) == 0:
             probs = np.diag(np.asarray(res.data()["density_matrix"])).real
             return np.require(probs, dtype=np.float64, requirements=["C"])
-        probs = np.diag(np.asarray(partial_trace(res.data()["density_matrix"], trace_qubits), order=["C"])).real
+        probs = np.diag(np.asarray(partial_trace(res.data()["density_matrix"], trace_qubits), order="C")).real
         return np.require(probs, dtype=np.float64, requirements=["C"])

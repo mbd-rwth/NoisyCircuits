@@ -13,7 +13,7 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 import pennylane as qml
 import numpy as np
 import ray
-from NoisyCircuits.utils import compute_trajectory_probs_single, compute_trajectory_probs_two_q, update_state_inplace_1q, update_state_inplace_2q, convert_state_endianess
+from NoisyCircuits.utils import compute_trajectory_probs_single, compute_trajectory_probs_two_q, update_state_inplace_1q, update_state_inplace_2q
 
 
 @ray.remote
@@ -54,7 +54,7 @@ class RemoteExecutor:
             "rz" : lambda p, q: qml.RZ(p, wires=q[0]),
             "ecr" : lambda p, q: qml.ECR(wires=q),
             "cz" : lambda p, q: qml.CZ(wires=q),
-            "rzz" : lambda p, q: qml.RZZ(p, wires=q),
+            "rzz" : lambda p, q: qml.IsingZZ(p, wires=q),
             "unitary" : lambda p, q: qml.QubitUnitary(p, wires=q)
         }
         self.noise_map = {
@@ -91,11 +91,10 @@ class RemoteExecutor:
             The updated state of the qubit system after applying the noise operator.
         """
         ops = self.single_qubit_noise[qubit[0]][1][gate]
-        convert_state_endianess(state)
-        kraus_probs = compute_trajectory_probs_single(ops, state, qubit[0])
-        chosen_index = np.random.choice(len(ops), p=kraus_probs)
-        update_state_inplace_1q(ops[chosen_index], state, qubit[0])
-        convert_state_endianess(state)
+        bit = self.num_qubits - 1 - qubit[0]
+        kraus_probs = compute_trajectory_probs_single(ops, state, bit)
+        chosen_index = np.random.choice(len(ops), p = kraus_probs)
+        update_state_inplace_1q(ops[chosen_index], state, bit)
         return state / np.sqrt(kraus_probs[chosen_index])
     
     def _apply_two_qubit_noise(self,
@@ -122,11 +121,13 @@ class RemoteExecutor:
         """
         qubit_pair = tuple(qubit_index)
         ops = self.two_qubit_noise[self.two_qubit_noise_index[gate]][1][qubit_pair]
-        convert_state_endianess(state)
-        kraus_probs = compute_trajectory_probs_two_q(ops, state, qubit_index)
-        chosen_index = np.random.choice(len(ops), p=kraus_probs)
-        update_state_inplace_2q(ops[chosen_index], state, qubit_index[0], qubit_index[1])
-        convert_state_endianess(state)
+        bits = [
+            self.num_qubits - 1 - qubit_index[1],
+            self.num_qubits - 1 - qubit_index[0]
+        ]
+        kraus_probs = compute_trajectory_probs_two_q(ops, state, bits)
+        chosen_index = np.random.choice(len(ops), p = kraus_probs)
+        update_state_inplace_2q(ops[chosen_index], state, bits[0], bits[1])
         return state / np.sqrt(kraus_probs[chosen_index])
     
     def _apply_no_noise(self,
