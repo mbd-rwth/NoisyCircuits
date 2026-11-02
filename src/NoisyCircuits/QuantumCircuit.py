@@ -412,7 +412,7 @@ class QuantumCircuit:
         self._check_gates_in_noise_model(instruction_list)
         container.instruction_list = instruction_list
 
-    def read_from_qiskit():
+    def read_from_qiskit(self):
         raise NotImplementedError    
     
     def _initialize_ray(self,
