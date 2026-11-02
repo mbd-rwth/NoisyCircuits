@@ -14,6 +14,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from glob import glob
 
 import pybind11
 from setuptools import Extension, setup
@@ -127,12 +128,19 @@ class BuildExt(build_ext):
         )
 
 
+CPP_HEADERS = sorted(
+    glob(
+        "./src/NoisyCircuits/utils/custom/src/*.hpp"
+    )
+)
+
 ext_modules = [
     Extension(
         "simulator",
         ["./src/NoisyCircuits/utils/custom/src/Simulator.cpp"],
-        include_dirs=[pybind11.get_include()],
-        language="c++",
+        include_dirs = [pybind11.get_include()],
+        depends = CPP_HEADERS,
+        language = "c++",
     ),
     Extension(
         "simulator_mpi",
@@ -140,14 +148,16 @@ ext_modules = [
             "./src/NoisyCircuits/utils/custom/src/SimulatorMPI.cpp",
             "./src/NoisyCircuits/utils/custom/src/Communicator.cpp"
         ],
-        include_dirs=[pybind11.get_include()],
-        language="c++",
+        include_dirs = [pybind11.get_include()],
+        depends = CPP_HEADERS,
+        language = "c++",
     ),
     Extension(
         "measurement_error_applicator",
         ["./src/NoisyCircuits/utils/custom/src/MeasurementErrorApplicator.cpp"],
-        include_dirs=[pybind11.get_include()],
-        language="c++",
+        include_dirs = [pybind11.get_include()],
+        depends = CPP_HEADERS,
+        language = "c++",
     ),
 ]
 

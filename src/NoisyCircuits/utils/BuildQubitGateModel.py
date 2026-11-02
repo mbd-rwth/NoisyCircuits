@@ -431,8 +431,8 @@ class BuildModel:
         self.qubit_coupling_map = []
         self.verbose = verbose
         self.logger = logging.getLogger(self.__class__.__name__)
-        handler = logging.StreamHandler()
-        self.logger.addHandler(handler)
+        if not self.logger.handlers:
+            self.logger.addHandler(logging.StreamHandler())
         if self.verbose:
             self.logger.setLevel(logging.INFO)
         else:
