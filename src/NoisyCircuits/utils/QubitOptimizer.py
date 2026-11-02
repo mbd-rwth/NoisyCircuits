@@ -7,6 +7,14 @@ from collections import deque
 from joblib import Parallel, delayed
 
 
+__all__ = [
+    "INTERACTIONS",
+    "QubitLayoutOptimizer",
+    "remove_couplers",
+    "select_and_relabel",
+    "connected_components"
+]
+
 INTERACTIONS = [
     "nearest_neighbour",
     "all_to_all"
@@ -342,8 +350,13 @@ class QubitLayoutOptimizer:
 
     def layout_cost(
         self,
-        layout : list[int]
+        layout : list[int],
+        interaction : str | None = None
     ) -> tuple[int, float]:
+        if interaction is None:
+            interaction = self.interaction
+        if interaction not in INTERACTIONS:
+            raise ValueError(f"interaction must be in {INTERACTIONS}")
         unavailable = sorted(set(layout) - set(self.adjacency))
         if unavailable:
             raise ValueError("Qubits {} are unavailable due to exclusion by high error rates or no data".format(unavailable))
@@ -352,7 +365,7 @@ class QubitLayoutOptimizer:
             raise ValueError("Selected qubits are not connected.")
         fidelity = sum(self.node_weight[q] for q in layout)
         members = set(layout)
-        if self.interaction == INTERACTIONS[0]:
+        if interaction == INTERACTIONS[0]:
             hops = sum(dist[a][b] - 1 for a, b in zip(layout, layout[1:]))
             fidelity += sum(self.edge_weight[frozenset((a, b))] for a, b in zip(layout, layout[1:]) if frozenset((a, b)) in self.edge_weight)
         else:
@@ -468,7 +481,7 @@ class QubitLayoutOptimizer:
             qubit_cluster : set
     ) -> tuple:
         ordered_cluster = sorted(qubit_cluster)
-        hops, fidelity = self.layout_cost(ordered_cluster)
+        hops, fidelity = self.layout_cost(ordered_cluster, INTERACTIONS[1])
         return (hops, -fidelity, tuple(ordered_cluster))
 
     def _device_distances(self) -> tuple[list[int], dict, np.ndarray]:

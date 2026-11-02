@@ -126,7 +126,7 @@ class QuantumCircuit:
             if qubit_layout not in INTERACTIONS:
                 raise ValueError("qubit_layout must be one of the following allowed layout interaction: {}".format(INTERACTIONS))
         elif isinstance(qubit_layout, list):
-            if any(not isinstance(qubit, int) for qubit in qubit_layout):
+            if any(not isinstance(qubit, int) or isinstance(qubit, bool) for qubit in qubit_layout):
                 raise TypeError("Entries in qubit_layout must be integers if using a list")
             if len(qubit_layout) != num_qubits or len(set(qubit_layout)) != num_qubits or any(q < 0 for q in qubit_layout):
                 raise ValueError("qubit_layout must have num_qubits distinct qubits and must be valid qubit indices")

@@ -418,13 +418,17 @@ class BuildModel:
         if not isinstance(verbose, bool):
             raise TypeError("Verbose flag must be a boolean.")
         if qubit_layout is not None:
-            if not isinstance(qubit_layout, list) or any(not isinstance(qubit, int) for qubit in qubit_layout):
+            if not isinstance(qubit_layout, list) or any(not isinstance(qubit, int) or isinstance(qubit, bool) for qubit in qubit_layout):
                 raise TypeError("qubit_layout must be of type list[int]")
+            if len(qubit_layout) != num_qubits:
+                raise ValueError("qubit_layout must contain exactly {} qubits".format(num_qubits))
+            if len(set(qubit_layout)) != len(qubit_layout):
+                raise ValueError("qubit_layout cannot contain duplicate entries")
             if any(qubit < 0 for qubit in qubit_layout):
-                raise ValueError("qubits in qubit_layout must have indices greater than equal to 0.")
+                raise ValueError("qubits in qubit_layout must have indices greater than equal to 0")
         self.noise_model = noise_model
         self.num_qubits = num_qubits
-        self.use_qubits = qubit_layout if qubit_layout is not None else range(num_qubits)
+        self.use_qubits = qubit_layout if qubit_layout is not None else list(range(num_qubits))
         self.threshold = threshold
         self.basis_gates = basis_gates
         self.num_cores = num_cores
