@@ -356,7 +356,8 @@ class QuantumCircuitMPI:
                 file_path,
                 list(getattr(container, "instruction_list", [])),
                 append_to_circuit,
-                self.basis_gates
+                self.basis_gates,
+                self.qubit_layout
             )
             instruction_list = parser.parse()
             self._check_gates_in_noise_model(instruction_list)
