@@ -11,6 +11,76 @@
 
 #pragma once
 #include "TypeDefs.hpp"
+#include <algorithm>
+#include <cmath>
+
+// Set the minimum number of amplitude pairs before allowing parallel execution.
+constexpr std::size_t MIN_PARALLEL_GROUPS = std::size_t{1} << 14;
+
+// --------------------------------------------------------------------------------------------------------------------------------------
+// Define cell kernels for loop vectorization for singe and two qubit gates 
+// --------------------------------------------------------------------------------------------------------------------------------------
+template <typename Kernel>
+static inline void for_each_pair(complex128* __restrict__ state, const std::size_t dim, const std::size_t stride, cuint thread_count, Kernel kernel){
+    const std::size_t pairs = dim >> 1;
+    #pragma omp parallel num_threads(thread_count) if(pairs >=  MIN_PARALLEL_GROUPS)
+    {
+        const std::size_t num_threads = omp_get_num_threads();
+        const std::size_t thread_number = omp_get_thread_num();
+        std::size_t p = pairs * thread_number / num_threads;
+        const std::size_t end_pair = pairs * (thread_number + 1) / num_threads;
+        if (stride >= 4){
+            while (p < end_pair){
+                const std::size_t end_run = std::min(end_pair, (p | (stride - 1)) + 1);
+                const std::size_t i0 = (p & (stride - 1)) | ((p & ~(stride - 1)) << 1);
+                const std::size_t length = end_run - p;
+                #pragma omp simd
+                for (std::size_t k = 0; k < length; ++k){
+                    kernel(state, i0 + k, i0 + k + stride);
+                }
+                p = end_pair;
+            }
+        }
+        else {
+            for (; p < end_pair; ++p){
+                const std::size_t i = (p & (stride - 1)) | ((p & ~(stride - 1)) << 1);
+                kernel(state, i, i + stride);
+            }
+        }
+    }
+}
+
+template <typename Kernel>
+static inline void for_each_quad(complex128* __restrict__ state, const std::size_t dim, const std::size_t s1, const std::size_t s2, cuint thread_count, Kernel kernel){
+    const std::size_t quads = dim >> 2;
+    const std::size_t low = std::min(s1, s2);
+    const std::size_t high = std::max(s1, s2);
+    #pragma omp parallel num_threads(thread_count) if(quads >= MIN_PARALLEL_GOUPS)
+    {
+        const std::size_t num_threads = omp_get_num_threads();
+        const std::size_t thread_number = omp_get_thread_num();
+        std::size_t g = quads * thread_number / num_threads;
+        const std::size_t end_g = quads * (thread_number + 1)  num_threads;
+        if (low >= 4){
+            while (g < end_g){
+                const std::size_t end_run = std::min(end_g, (g | (low - 1)) + 1);
+                const std::size_t g_low = (g & (low - 1)) | ((g & ~(low - 1)) << 1);
+                const std::size_t i0 = (g_low & (high - 1)) | ((g_low & ~(high - 1)) << 1);
+                const std::size_t length = end_run - g;
+                # pragma omp simd
+                for (std::size_t k = 0; k < length; ++k){
+                    kernel(state, i0 + k);
+                }
+                g = end_run;
+            }
+        }
+        else {
+            for (; g < end_g; ++g){
+                kernel(state, (g_low & (high - 1)) | ((g_low & ~(high - 1)) << 1));
+            }
+        }
+    }
+}
 
 // --------------------------------------------------------------------------------------------------------------------------------------
 // Code Section for Quantum Gate Application
@@ -43,15 +113,11 @@
 static inline void apply_X_gate(complex128* __restrict__ state, const std::size_t q, const std::size_t q_null, const std::size_t num_qubits, const double theta, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
     const std::size_t dim = std::size_t{1} << num_qubits;
     const std::size_t stride = std::size_t{1} << q;
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t pair = 0; pair < (dim >> 1); ++pair){
-        const std::size_t i = (pair & (stride - 1)) | ((pair & ~(stride - 1)) << 1);
-        const std::size_t j = i | stride;
-        const complex128 s0 = state[i];
-        const complex128 s1 = state[j];
-        state[i] = s1;
-        state[j] = s0;
-    }
+    for_each_pair(state, dim, stride, thread_count, [](complex128* __restrict__ s, const std::size_t i, const std::size_t j){
+        const complex128 s0 = s[i];
+        s[i] = s[j];
+        s[j] = s0;
+    });
 }
 
 /**
@@ -83,15 +149,11 @@ static inline void apply_RZ_gate(complex128* __restrict__ state, const std::size
     const std::size_t stride = std::size_t{1} << q;
     const double cosine = std::cos(0.5 * theta);
     const double sine = std::sin(0.5 * theta);
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t pair = 0; pair < (dim >> 1); ++pair){
-        const std::size_t i = (pair & (stride - 1)) | ((pair & ~(stride - 1)) << 1);
-        const std::size_t j = i | stride;
-        const complex128 s0 = state[i];
-        const complex128 s1 = state[j];
-        state[i] = complex128(cosine * s0.real() + sine * s0.imag(), cosine * s0.imag() - sine * s0.real());
-        state[j] = complex128(cosine * s1.real() - sine * s1.imag(), cosine * s1.imag() + sine * s1.real());
-    }
+    for_each_pair(state, dim, stride, thread_count, [cosine, sine](complex128* __restrict__ s, const std::size_t i, const std::size_t j){
+        const double a = s[i].real(), b = s[i].imag(), c = s[j].real(), d = s[j].imag();
+        s[i] = complex128(cosine * a + sine * b, cosine * b - sine * a);
+        s[j] = complex128(cosine * a - sine * d, cosine * d + sine * c);
+    });
 }
 
 /**
@@ -123,15 +185,11 @@ static inline void apply_RX_gate(complex128* __restrict__ state, const std::size
     const std::size_t stride = std::size_t{1} << q;
     const double cosine = std::cos(0.5 * theta);
     const double sine = std::sin(0.5 * theta);
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t pair = 0; pair < (dim >> 1); ++pair){
-        const std::size_t i = (pair & (stride - 1)) | ((pair & ~(stride - 1)) << 1);
-        const std::size_t j = i | stride;
-        const complex128 s0 = state[i];
-        const complex128 s1 = state[j];
-        state[i] = complex128(cosine * s0.real() + sine * s1.imag(), cosine * s0.imag() - sine * s1.real());
-        state[j] = complex128(sine * s0.imag() + cosine * s1.real(), cosine * s1.imag() - sine * s0.real());
-    }
+    for_each_pair(state, dim, stride, thread_count, [cosine, sine](complex128* __restrict__ s, const std::size_t i, const std::size_t j){
+        const double a = s[i].real(), b = s[i].imag(), c = s[j].real(), d = s[j].imag();
+        s[i] = complex128(cosine * a + sine * d, cosine * b - sine * c);
+        s[j] = complex128(sine * b + cosine * c, cosine * d - sine * a);
+    });
 }
 
 /**
@@ -161,17 +219,11 @@ static inline void apply_RX_gate(complex128* __restrict__ state, const std::size
 static inline void apply_SX_gate(complex128* __restrict__ state, const std::size_t q, const std::size_t q_null, const std::size_t num_qubits, const double theta, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
     const std::size_t dim = std::size_t{1} << num_qubits;
     const std::size_t stride = std::size_t{1} << q;
-    constexpr complex128 post_i = complex128(0.5, 0.5);
-    constexpr complex128 negt_i = complex128(0.5, -0.5);
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t pair = 0; pair < (dim >> 1); ++pair){
-        const std::size_t i = (pair & (stride - 1)) | ((pair & ~(stride - 1)) << 1);
-        const std::size_t j = i | stride;
-        const complex128 s0 = state[i];
-        const complex128 s1 = state[j];
-        state[i] = post_i * s0 + negt_i * s1;
-        state[j] = negt_i * s0 + post_i * s1;
-    }
+    for_each_pair(state, dim, stride, thread_count, [](complex128* __restrict__ s, const std::size_t i, const std::size_t j){
+        const double a = s[i].real(), b = s[i].imag(), c = s[j].real(), d = s[j].imag();
+        s[i] = complex128(0.5 * (a - b + c + d), 0.5 * (a + b - c + d));
+        s[j] = complex128(0.5 * (a + b + c - d), 0.5 * (-a + b + c + d));
+    });
 }
 
 /**
@@ -203,15 +255,11 @@ static inline void apply_RY_gate(complex128* __restrict__ state, const std::size
     const std::size_t stride = std::size_t{1} << q;
     const double cosine = std::cos(0.5 * theta);
     const double sine = std::sin(0.5 * theta);
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t pair = 0; pair < (dim >> 1); ++pair){
-        const std::size_t i = (pair & (stride - 1)) | ((pair & ~(stride - 1)) << 1);
-        const std::size_t j = i | stride;
-        const complex128 s0 = state[i];
-        const complex128 s1 = state[j];
-        state[i] = complex128(cosine * s0.real() - sine * s1.real(), cosine * s0.imag() - sine * s1.imag());
-        state[j] = complex128(sine * s0.real() + cosine * s1.real(), sine * s0.imag() + cosine * s1.imag());
-    }
+    for_each_pair(state, dim, stride, thread_count, [cosine, sine](complex128* __restrict__ s, const std::size_t i, const std::size_t j){
+        const double a = s[i].real(), b = s[i].imag(), c = s[j].real(), d = s[j].imag();
+        s[i] = complex128(cosine * a - sine * c, cosine * b - sine * d);
+        s[j] = complex128(sine * a + cosine * c, sine * b + cosine * d);
+    });
 }
 
 /**
@@ -242,15 +290,11 @@ static inline void apply_H_gate(complex128* __restrict__ state, const std::size_
     const std::size_t dim = std::size_t{1} << num_qubits;
     const std::size_t stride = std::size_t{1} << q;
     constexpr double inv_sqrt_2 = 0.7071067811865475;
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t pair = 0; pair < (dim >> 1); ++pair){
-        const std::size_t i = (pair & (stride - 1)) | ((pair & ~(stride - 1)) << 1);
-        const std::size_t j = i | stride;
-        const complex128 s0 = state[i];
-        const complex128 s1 = state[j];
-        state[i] = inv_sqrt_2 * (s0 + s1);
-        state[j] = inv_sqrt_2 * (s0 - s1);
-    }
+    for_each_pair(state, dim, stride, thread_count, [](complex128* __restrict__ s, const std::size_t i, const std::size_t j){
+        const double a = s[i].real(), b = s[i].imag(), c = s[j].real(), d = s[j].imag();
+        s[i] = complex128(inv_sqrt_2 * (a + c), inv_sqrt_2 * (b + d));
+        s[j] = complex128(inv_sqrt_2 * (a - c), inv_sqrt_2 * (b - d));
+    });
 }
 
 /**
@@ -282,15 +326,10 @@ static inline void apply_P_gate(complex128* __restrict__ state, const std::size_
     const std::size_t stride = std::size_t{1} << q;
     const double cosine = std::cos(theta);
     const double sine = std::sin(theta);
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t pair = 0; pair < (dim >> 1); ++pair){
-        const std::size_t i = (pair & (stride - 1)) | ((pair & ~(stride - 1)) << 1);
-        const std::size_t j = i | stride;
-        const complex128 s0 = state[i];
-        const complex128 s1 = state[j];
-        state[i] = s0;
-        state[j] = complex128(s1.real() * cosine - s1.imag() * sine, s1.real() * sine + s1.imag() * cosine);
-    }
+    for_each_pair(state, dim, stride, thread_count, [cosine, sine](complex128* __restrict__ s, const std::size_t i, const std::size_t j){
+        const double c = s[j].real(), d = s[j].imag();
+        s[j] = complex128(c * cosine - d * sine, c * sine + d * cosine);
+    });
 }
 
 /**
@@ -319,16 +358,12 @@ static inline void apply_P_gate(complex128* __restrict__ state, const std::size_
  */
 static inline void apply_CZ_gate(complex128* __restrict__ state, const std::size_t q1, const std::size_t q2, const std::size_t num_qubits, const double theta, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
     const std::size_t dim = std::size_t{1} << num_qubits;
-    const std::size_t iters = dim >> 2;
-    const std::size_t m1 = (1ULL << (q1 < q2 ? q1 : q2)) - 1;
-    const std::size_t m2 = (1ULL << ((q1 > q2 ? q1 : q2))) - 1;
-    const std::size_t target_mask = (1ULL << q1) | (1ULL << q2);
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t i = 0; i < iters; ++i){
-        const size_t i_s1 = (i & m1) | ((i & ~m1) << 1);
-        const size_t pos = (i_s1 & m2) | ((i_s1 & ~m2) << 1);
-        state[pos | target_mask] = -state[pos | target_mask];
-    }
+    const std::size_t s1 = std::size_t{1} << q1;
+    const std::size_t s2 = std::size_t{1} << q2;
+    const std::size_t s11 = q1 + q2;
+    for_each_quad(state, dim, s1, s2, thread_count, [s11](complex128* __restrict__ s, const std::size_t i){
+        s[i + s11] = -s[i + s11];
+    });
 }
 
 /**
@@ -357,33 +392,18 @@ static inline void apply_CZ_gate(complex128* __restrict__ state, const std::size
  */
 static inline void apply_RZZ_gate(complex128* __restrict__ state, const std::size_t q1, const std::size_t q2, const std::size_t num_qubits, const double theta, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
     const std::size_t dim = std::size_t{1} << num_qubits;
-    const std::size_t iters = dim >> 2;
-    const std::size_t q_min = q1 < q2 ? q1 : q2;
-    const std::size_t q_max = q1 > q2 ? q1 : q2;
-    const std::size_t m1 = (1ULL << q_min) - 1;
-    const std::size_t m2 = (1ULL << (q_max)) - 1;
-    const std::size_t ull_q1 = 1ULL << q1;
-    const std::size_t ull_q2 = 1ULL << q2;
-    const std::size_t target_mask = ull_q1 | ull_q2;
+    const std::size_t sq1 = std::size_t{1} << q1;
+    const std::size_t sq2 = std::size_t{1} << q2;
     const double cosine = std::cos(0.5 * theta);
     const double sine = std::sin(0.5 * theta);
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t i = 0; i < iters; ++i){
-        const std::size_t i_s1 = (i & m1) | ((i & ~m1) << 1);
-        const std::size_t pos = (i_s1 & m2) | ((i_s1 & ~m2) << 1);
-        const std::size_t idx00 = pos;
-        const std::size_t idx01 = pos | ull_q1;
-        const std::size_t idx10 = pos | ull_q2;
-        const std::size_t idx11 = pos | target_mask;
-        const complex128 s00 = state[idx00];
-        const complex128 s01 = state[idx01];
-        const complex128 s10 = state[idx10];
-        const complex128 s11 = state[idx11];
-        state[idx00] = complex128(cosine * s00.real() + sine * s00.imag(), cosine * s00.imag() - sine * s00.real());
-        state[idx01] = complex128(cosine * s01.real() - sine * s01.imag(), cosine * s01.imag() + sine * s01.real());
-        state[idx10] = complex128(cosine * s10.real() - sine * s10.imag(), cosine * s10.imag() + sine * s10.real());
-        state[idx11] = complex128(cosine * s11.real() + sine * s11.imag(), cosine * s11.imag() - sine * s11.real());
-    }
+    for_each_quad(state, dim, sq1, sq2, thread_count, [sq1, sq2, cosine, sine](complex128* __restrict__ s, const std::size_t i){
+        const std::size_t idx[4] = {i, i + sq1, i + sq2, i + sq1 + sq2};
+        const double sign[4] = {1.0, -1.0, -1.0, 1.0};
+        for (int k = 0; k < 4; ++k){
+            const double a = s[idx[k]].real(), b = s[idx[k]].imag();
+            s[idx[k]] = complex128(cosine * a + sign[k] * sine * b, cosine * b - sign[k] * sine * a);
+        }
+    });
 }
 
 /**
@@ -412,33 +432,18 @@ static inline void apply_RZZ_gate(complex128* __restrict__ state, const std::siz
  */
 static inline void apply_ECR_gate(complex128* __restrict__ state, const std::size_t q1, const std::size_t q2, const std::size_t num_qubits, const double theta, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
     const std::size_t dim = std::size_t{1} << num_qubits;
-    const std::size_t iters = dim >> 2;
-    const std::size_t q_min = q1 < q2 ? q1 : q2;
-    const std::size_t q_max = q1 > q2 ? q1 : q2;
-    const std::size_t m1 = (1ULL << q_min) - 1;
-    const std::size_t m2 = (1ULL << q_max) - 1;
-    const std::size_t ull_q1 = 1ULL << q1;
-    const std::size_t ull_q2 = 1ULL << q2;
-    const std::size_t target_mask = ull_q1 | ull_q2;
-    constexpr double inv_sqrt_2 = 0.7071067811865476;
-    constexpr complex128 inv_sqrt_2i = complex128(0.0, 0.7071067811865476);
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t i = 0; i < iters; ++i){
-        const std::size_t i_s1 = (i & m1) | ((i & ~m1) << 1);
-        const std::size_t pos = (i_s1 & m2) | ((i_s1 & ~m2) << 1);
-        const std::size_t idx00 = pos;
-        const std::size_t idx01 = pos | ull_q1;
-        const std::size_t idx10 = pos | ull_q2;
-        const std::size_t idx11 = pos | target_mask;
-        const complex128 s00 = state[idx00];
-        const complex128 s01 = state[idx01];
-        const complex128 s10 = state[idx10];
-        const complex128 s11 = state[idx11];
-        state[idx00] = inv_sqrt_2 * s01 + inv_sqrt_2i * s11;
-        state[idx01] = inv_sqrt_2 * s00 - inv_sqrt_2i * s10;
-        state[idx10] = inv_sqrt_2 * s11 + inv_sqrt_2i * s01;
-        state[idx11] = inv_sqrt_2 * s10 - inv_sqrt_2i * s00;
-    }
+    const std::size_t sq1 = std::size_t{1} << q1;
+    const std::size_t sq2 = std::size_t{1} << q2;
+    constexpr double r = 0.7071067811865475;
+    for_each_quad(state, dim, sq1, sq2, thread_count, [sq1, sq2](complex128* __restrict__ s, const std::size_t i){
+        const std::size_t i01 = i + sq1, i10 = i + sq2, i11 = i + sq1 + sq2;
+        const double a00 = s[i].real(), b00 = s[i].imag(), a01 = s[i01].real(), b01 = s[i01].imag();
+        const double a10 = s[i10].real(), b10 = s[i10].imag(), a11 = s[i11].real(), b11 = s[i11].imag();
+        s[i] = complex128(r * (a01 - b11), r * (b01 + a11));
+        s[i01] = complex128(r * (a00 + b10), r * (b00 - a10));
+        s[i10] = complex128(r * (a11 - b01), r * (b11 + a01));
+        s[i11] = complex128(r * (a10 + b00), r * (b10 - a00));
+    });
 }
 
 /**
@@ -467,25 +472,13 @@ static inline void apply_ECR_gate(complex128* __restrict__ state, const std::siz
  */
 static inline void apply_CX_gate(complex128* __restrict__ state, const std::size_t q1, const std::size_t q2, const std::size_t num_qubits, const double theta, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
     const std::size_t dim = std::size_t{1} << num_qubits;
-    const std::size_t iters = dim >> 2;
-    const std::size_t q_min = q1 < q2 ? q1 : q2;
-    const std::size_t q_max = q1 > q2 ? q1 : q2;
-    const std::size_t m1 = (1ULL << q_min) - 1;
-    const std::size_t m2 = (1ULL << q_max) - 1;
-    const std::size_t ull_q1 = 1ULL << q1;
-    const std::size_t ull_q2 = 1ULL << q2;
-    const std::size_t target_mask = ull_q1 | ull_q2;
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t i = 0; i < iters; ++i){
-        const std::size_t i_s1 = (i & m1) | ((i & ~m1) << 1);
-        const std::size_t pos = (i_s1 & m2) | ((i_s1 & ~m2) << 1);
-        const std::size_t idx01 = pos | ull_q1;
-        const std::size_t idx11 = pos | target_mask;
-        const complex128 s01 = state[idx01];
-        const complex128 s11 = state[idx11];
-        state[idx01] = s11;
-        state[idx11] = s01;
-    }
+    const std::size_t sq1 = std::size_t{1} << q1;
+    const std::size_t sq2 = std::size_t{1} << q2;
+    for_each_quad(state, dim, sq1, sq2, thread_count, [sq1, sq2](complex128* __restrict__ s, const std::size_t i){
+        const complex128 s01 = s[i + sq1];
+        s[i + sq1] = s[i + sq1 + sq2];
+        s[i + sq1 + sq2] = s01;
+    });
 }
 
 /**
@@ -514,25 +507,13 @@ static inline void apply_CX_gate(complex128* __restrict__ state, const std::size
  */
 static inline void apply_SWAP_gate(complex128* __restrict__ state, const std::size_t q1, const std::size_t q2, const std::size_t num_qubits, const double theta, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
     const std::size_t dim = std::size_t{1} << num_qubits;
-    const std::size_t iters = dim >> 2;
-    const std::size_t q_min = q1 < q2 ? q1 : q2;
-    const std::size_t q_max = q1 > q2 ? q1 : q2;
-    const std::size_t m1 = (1ULL << q_min) - 1;
-    const std::size_t m2 = (1ULL << q_max) - 1;
-    const std::size_t ull_q1 = 1ULL << q1;
-    const std::size_t ull_q2 = 1ULL << q2;
-    const std::size_t target_mask = ull_q1 | ull_q2;
-    #pragma omp parallel for num_threads(thread_count)
-    for (std::size_t i = 0; i < iters; ++i){
-        const std::size_t i_s1 = (i & m1) | ((i & ~m1) << 1);
-        const std::size_t pos = (i_s1 & m2) | ((i_s1 & ~m2) << 1);
-        const std::size_t idx01 = pos | ull_q1;
-        const std::size_t idx10 = pos | ull_q2;
-        const complex128 s01 = state[idx01];
-        const complex128 s10 = state[idx10];
-        state[idx01] = s10;
-        state[idx10] = s01;
-    }
+    const std::size_t sq1 = std::size_t{1} << q1;
+    const std::size_t sq2 = std::size_t{1} << q2;
+    for_each_quad(state, dim, sq1, sq2, thread_count, [sq1, sq2](complex128* __restrict__ s, const std::size_t i){
+        const complex128 s01 = s[i + sq1];
+        s[i + sq1] = s[i + sq2];
+        s[i + sq2] = s01;
+    });
 }
 
 /**

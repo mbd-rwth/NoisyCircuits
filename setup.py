@@ -67,6 +67,7 @@ class BuildExt(build_ext):
         "-O2",
         "-march=native",
         "-mtune=native",
+        "-fcx-limited-range",
         "-funroll-loops",
         "-fcf-protection=none",
         "-fno-stack-protector",
