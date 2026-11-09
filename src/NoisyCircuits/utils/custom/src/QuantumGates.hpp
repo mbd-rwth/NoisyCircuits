@@ -153,7 +153,7 @@ static inline void apply_RZ_gate(complex128* __restrict__ state, const std::size
     for_each_pair(state, dim, stride, thread_count, [cosine, sine](complex128* __restrict__ s, const std::size_t i, const std::size_t j){
         const double a = s[i].real(), b = s[i].imag(), c = s[j].real(), d = s[j].imag();
         s[i] = complex128(cosine * a + sine * b, cosine * b - sine * a);
-        s[j] = complex128(cosine * a - sine * d, cosine * d + sine * c);
+        s[j] = complex128(cosine * c - sine * d, cosine * d + sine * c);
     });
 }
 
@@ -361,7 +361,7 @@ static inline void apply_CZ_gate(complex128* __restrict__ state, const std::size
     const std::size_t dim = std::size_t{1} << num_qubits;
     const std::size_t s1 = std::size_t{1} << q1;
     const std::size_t s2 = std::size_t{1} << q2;
-    const std::size_t s11 = q1 + q2;
+    const std::size_t s11 = s1 + s2;
     for_each_quad(state, dim, s1, s2, thread_count, [s11](complex128* __restrict__ s, const std::size_t i){
         s[i + s11] = -s[i + s11];
     });
