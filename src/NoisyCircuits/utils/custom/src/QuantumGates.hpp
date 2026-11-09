@@ -38,7 +38,7 @@ static inline void for_each_pair(complex128* __restrict__ state, const std::size
                 for (std::size_t k = 0; k < length; ++k){
                     kernel(state, i0 + k, i0 + k + stride);
                 }
-                p = end_pair;
+                p = end_run;
             }
         }
         else {
@@ -55,12 +55,12 @@ static inline void for_each_quad(complex128* __restrict__ state, const std::size
     const std::size_t quads = dim >> 2;
     const std::size_t low = std::min(s1, s2);
     const std::size_t high = std::max(s1, s2);
-    #pragma omp parallel num_threads(thread_count) if(quads >= MIN_PARALLEL_GOUPS)
+    #pragma omp parallel num_threads(thread_count) if(quads >= MIN_PARALLEL_GROUPS)
     {
         const std::size_t num_threads = omp_get_num_threads();
         const std::size_t thread_number = omp_get_thread_num();
         std::size_t g = quads * thread_number / num_threads;
-        const std::size_t end_g = quads * (thread_number + 1)  num_threads;
+        const std::size_t end_g = quads * (thread_number + 1) / num_threads;
         if (low >= 4){
             while (g < end_g){
                 const std::size_t end_run = std::min(end_g, (g | (low - 1)) + 1);
@@ -76,6 +76,7 @@ static inline void for_each_quad(complex128* __restrict__ state, const std::size
         }
         else {
             for (; g < end_g; ++g){
+                const std::size_t g_low = (g & (low - 1)) | ((g & ~(low - 1)) << 1);
                 kernel(state, (g_low & (high - 1)) | ((g_low & ~(high - 1)) << 1));
             }
         }
