@@ -517,124 +517,303 @@ static inline void apply_SWAP_gate(complex128* __restrict__ state, const std::si
     });
 }
 
+// --------------------------------------------------------------------------------------------------------------------------------------
+// Code Section for Applying Arbitrary Quantum Unitary Gates
+// --------------------------------------------------------------------------------------------------------------------------------------
+
 /**
- * Function that applies an arbitrary unitary operator and modifies the state vector inplace
+ * Function that insert a zero bit at each of the bit positions given by the index
  * 
  * Inputs:
+ *      index : std::size_t
+ *          Index into which the zero bits are inserted
+ *      sorted_targets : const std::size_t*
+ *          Pointer to the bit positions at which to insert the zero bits, given in ascending order
+ *      num_targets : const std::size_t
+ *          Total number of bit positions (number of qubits in the system)
+ * 
+ * Returns:
+ *      std::size_t
+ *          Index with a zero bit at every position in the sorted targets
+ */
+static inline std::size_t insert_zero_bits(std::size_t index, const std::size_t* sorted_targets, const std::size_t num_qubits){
+    for (std::size_t i = 0; i < num_qubits; ++i){
+        const std::size_t low = (std::size_t{1} << sorted_targets[i]) - 1;
+        index = (index & low) | ((index & ~low) << 1);
+    }
+    return index;
+}
+
+/**
+ * Function that applies a diagonal unitary matrix to a given state inplace
+ * 
+ * Inputs: 
  *      state : complex128*
- *          Pointer to the statevector
- *      q1 : const std::size_t
- *          Unused variable, kept for type signature consistency
- *      q2 : const std::size_t
- *          Unused variable, kept for type signature consistency
- *      num_qubits : const std::size_t
- *          Total number of qubits in the circuit
- *      theta : const double
- *          Unused variable, kept for type signature consistency
+ *          Pointer to the statevector of the system
+ *      dim : const std::size_t
+ *          Length of the statevector
  *      U : const matrix&
- *          The unitary operator that is to be applied to the circuit
- *      target_qubits : const std::vector<std::size_t>& 
- *          Set of qubits to which the unitary operator is to be applied to, must be in ascending order
+ *          Reference to the diagonal unitary matrix
+ *      target_qubits : std::vector<std::size_t>&
+ *          Reference to the vector containing the indices of the target qubits
  *      thread_count : const unsigned int
- *          Number of threads to distribute the computation
+ *          Number of threads to use for parallelization
  * 
  * Returns:
  *      None
  */
-static inline void apply_unitary_gate(complex128* __restrict__ state, const std::size_t q_null, const std::size_t q_null2, const std::size_t num_qubits, const double theta, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
+static inline void apply_diagonal_matrix(complex128* __restrict__ state, const std::size_t dim, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
+    const std::size_t num_target_qubits = target_qubits.size();
+    const std::size_t inner_dim = std::size_t{1} << num_target_qubits;
+    std::vector<double> diagonal_real(inner_dim), diagonal_imag(inner_dim);
+    for (std::size_t i = 0; i < inner_dim; ++i){
+        diagonal_imag[i] = U[i][i].imag();
+        diagonal_real[i] = U[i][i].real();
+    }
+    const std::size_t smallest_target = *std::min_element(target_qubits.begin(), target_qubits.end());
+    const std::size_t block_size = std::size_t{1} << std::min<std::size_t>(smallest_target, 12);
+    const std::size_t num_blocks = dim / block_size;
+    const double* __restrict__ d_real = diagonal_real.data();
+    const double* __restrict__ d_imag = diagonal_imag.data();
+
+    #pragma omp parallel for schedule(static) num_threads(thread_count) if(dim >= (MIN_PARALLEL_GROUPS << 1))
+    for (std::size_t block = 0; block < num_blocks; ++block){
+        const std::size_t base = block * block_size;
+        std::size_t l = 0;
+        for (std::size_t b = 0; b < num_target_qubits; ++b){
+            l |= ((base >> target_qubits[b]) & 1) << b;
+        }
+        const double phase_real = d_real[l], phase_imag = d_imag[l];
+        #pragma omp simd
+        for (std::size_t i = base; i < base + block_size; ++i){
+            const double a = state[i].real(), b = state[i].imag();
+            state[i] = complex128(phase_real * a - phase_imag * b, phase_real * b + phase_imag * a);
+        }
+    }
+}
+
+
+/**
+ * Function that applies a dense unitary operator on a fixed numbber of qubits and updates the state inplace
+ * 
+ * Inputs:
+ *      state : complex128*
+ *          Pointer to the statevector
+ *      dim : const std::size_t
+ *          Lenght of the statevector
+ *      U : const matrix&
+ *          Reference to the dense unitary matrix
+ *      target_qubits : const std::vector<std::size_t>&
+ *          Reference to the vector containing the indices of the target qubits
+ *      thread_count : const unsigned int
+ *          Number of threads to use for parallelization
+ * 
+ * Returns:
+ *      None
+ */
+template <std::size_t K>
+static inline void apply_dense_unitary_fixed(complex128* __restrict__ state, const std::size_t dim, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
+    constexpr std::size_t D = std::size_t{1} << K;
+    double U_re[D][D], U_im[D][D];
+    for (std::size_t r = 0; r < D; ++r){
+        for (std::size_t c = 0; c < D; ++c){
+            U_re[r][c] = U[r][c].real();
+            U_im[r][c] = U[r][c].imag();
+        }
+    }
+    std::size_t offsets[D];
+    for (std::size_t l = 0; l < D; ++l){
+        offsets[l] = 0;
+        for (std::size_t b = 0; b < K; ++b){
+            if ((l >> b) & 1) offsets[l] |= std::size_t{1} << target_qubits[b];
+        }
+    }
+    std::size_t sorted_targets[K];
+    std::copy(target_qubits.begin(), target_qubits.end(), sorted_targets);
+    std::sort(sorted_targets, sorted_targets + K);
+    const std::size_t groups = dim >> K;
+
+    #pragma omp parallel for schedule(static) num_threads(thread_count) if(groups >= MIN_PARALLEL_GROUPS)
+    for (std::size_t g = 0; g < groups; ++g){
+        const std::size_t base = insert_zero_bits(g, sorted_targets, K);
+        double v_real[D], v_imag[D];
+        for (std::size_t c = 0; c < D; ++c){
+            v_real[c] = state[base + offsets[c]].real();
+            v_imag[c] = state[base + offsets[c]].imag();
+        }
+        for (std::size_t r = 0; r < D; ++r){
+            double sum_real = 0.0, sum_imag = 0.0;
+            for (std::size_t c = 0; c < D; ++c){
+                sum_real += U_re[r][c] * v_real[c] - U_im[r][c] * v_imag[c];
+                sum_imag += U_re[r][c] * v_imag[c] + U_im[r][c] * v_real[c];
+            }
+            state[base + offsets[r]] = complex128(sum_real, sum_imag);
+        }
+    }
+}
+
+/**
+ * Function that applies a dense unitary operator on any number of qubits and updates the statevector inplace
+ * 
+ * Inputs:
+ *      state : complex128*
+ *          Pointer to the statevector
+ *      dim : const std::size_t
+ *          Length of the statevector
+ *      U : const matrix&
+ *          Reference to the dense unitary operator
+ *      target_qubits : const std::vector<std::size_t>&
+ *          Reference to the vector containing the indices to the target qubits
+ *      thread_count : const unsigned int
+ *          Number of threads to use for parallelization
+ * 
+ * Returns:
+ *      None
+ */
+static inline void apply_dense_unitary_generic(complex128* __restrict__ state, const std::size_t dim, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
+    const std::size_t num_targets = target_qubits.size();
+    const std::size_t D = std::size_t{1} << num_targets;
+    std::vector<double> U_re(D * D), U_im(D * D);
+    for (std::size_t r = 0; r < D; ++r){
+        for (std::size_t c = 0; c < D; ++c){
+            U_re[r * D + c] = U[r][c].real();
+            U_im[r * D + c] = U[r][c].imag();
+        }
+    }
+    std::vector<std::size_t> offsets(D, 0);
+    for (std::size_t l = 0; l < D; ++l){
+        for (std::size_t b = 0; b < num_targets; ++b){
+            if ((l >> b) & 1) offsets[l] |= std::size_t{1} << target_qubits[b];
+        }
+    }
+    std::vector<std::size_t> sorted_targets(target_qubits.begin(), target_qubits.end());
+    std::sort(sorted_targets.begin(), sorted_targets.end());
+    const std::size_t groups = dim >> num_targets;
+
+    #pragma omp parallel num_threads(thread_count) if(groups >= MIN_PARALLEL_GROUPS)
+    {
+        std::vector<double> v_real(D), v_imag(D);
+        #pragma omp for schedule(static)
+        for (std::size_t g = 0; g < groups; ++g){
+            const std::size_t base = insert_zero_bits(g, sorted_targets.data(), num_targets);
+            for (std::size_t c = 0; c < D; ++c){
+                v_real[c] = state[base + offsets[c]].real();
+                v_imag[c] = state[base + offsets[c]].imag();
+            }
+            for (std::size_t r = 0; r < D; ++r){
+                const double* __restrict__ row_real = &U_re[r * D];
+                const double* __restrict__ row_imag = &U_im[r * D];
+                double sum_real = 0.0, sum_imag = 0.0;
+                #pragma omp simd reduction(+:sum_real, sum_imag)
+                for (std::size_t c = 0; c < D; ++c){
+                    sum_real += row_real[c] * v_real[c] - row_imag[c] * v_imag[c];
+                    sum_imag += row_real[c] * v_imag[c] + row_imag[c] * v_real[c];
+                }
+                state[base + offsets[r]] = complex128(sum_real, sum_imag);
+            }
+        }
+    }
+}
+
+/**
+ * Function that applies an arbitrary unitary operator and updates the state inplace
+ * 
+ * Inputs:
+ *      state : complex128*
+ *          Pointer to the system statevector
+ *      q1_null : const std::size_t
+ *          Unused variable and kept for type signature consistency
+ *      q2_null : const std::size_t
+ *          Unused variable and kept for type signature consistency
+ *      num_qubits : const std::size_t
+ *          Total number of qubits in the circuit
+ *      theta : const double
+ *          Unused variable and kept for type signature consistency
+ *      U : const matrix&
+ *          Reference to the unitary operator matrix
+ *      target_qubits : const std::vector<std::size_t>&
+ *          Reference to the vector containing the indices of the target qubits
+ *      thread_count : const unsigned int
+ *          Number of threads for parallelization
+ * 
+ * Returns:
+ *      None
+ */
+static inline void apply_unitary_gate(complex128* __restrict__ state, const std::size_t q1_null, const std::size_t q2_null, const std::size_t num_qubits, const double theta, const matrix& U, const std::vector<std::size_t>& target_qubits, cuint thread_count){
     const std::size_t num_targets = target_qubits.size();
     const std::size_t dim = std::size_t{1} << num_qubits;
     const std::size_t inner_dim = std::size_t{1} << num_targets;
-    const std::size_t outer_dim = dim >> num_targets;
-    std::vector<unsigned char> is_target(num_qubits, 0);
-    for (std::size_t t = 0; t < num_targets; ++t){
-        is_target[target_qubits[t]] = 1;
-    }
-    std::vector<std::size_t> target_offsets(inner_dim, 0);
-    for (std::size_t inner = 0; inner < inner_dim; ++inner){
-        std::size_t idx = 0;
-        for (std::size_t b = 0; b < num_targets; ++b){
-            if (inner & (std::size_t{1} << b)) {
-                idx |= (std::size_t{1} << target_qubits[b]);
+
+    // Skip identity operators
+    bool diagonal = true, identity = true;
+    for (std::size_t r = 0; r < inner_dim && diagonal; ++r){
+        for (std::size_t c = 0; c < inner_dim; ++c){
+            if (r != c && U[r][c] != 0.0){
+                diagonal = false;
+                identity = false;
+                break;
+            }
+            if (r == c && U[r][c] != 1.0){
+                identity = false;
             }
         }
-        target_offsets[inner] = idx;
+    }
+    if (identity){
+        return;
+    }
+    if (diagonal){
+        apply_diagonal_matrix(state, dim, U, target_qubits, thread_count);
+        return;
     }
 
-    if (outer_dim >= inner_dim){
-        #pragma omp parallel num_threads(thread_count)
-        {
-            std::vector<complex128> temp(inner_dim);
-            std::vector<complex128> new_local(inner_dim);
-
-            #pragma omp for schedule(static)
-            for (std::size_t outer = 0; outer < outer_dim; ++outer){
-                std::size_t base_idx = 0;
-                std::size_t src_idx = outer;
-                for (std::size_t bit = 0; bit < num_qubits; ++bit){
-                    if (is_target[bit]){
-                        continue;
-                    }
-                    if  (src_idx & 1ULL){
-                        base_idx |= (std::size_t{1} << bit);
-                    }
-                    src_idx >>= 1;
-                }
-                for (std::size_t i = 0; i < inner_dim; ++i){
-                    temp[i] = state[base_idx | target_offsets[i]];
-                }
-                for (std::size_t r = 0; r < inner_dim; ++r){
-                    complex128 sum(0.0, 0.0);
-                    for (std::size_t c = 0; c < inner_dim; ++c){
-                        sum += U[r][c] * temp[c];
-                    }
-                    new_local[r] = sum;
-                }
-                for (std::size_t i = 0; i < inner_dim; ++i){
-                    state[base_idx | target_offsets[i]] = new_local[i];
-                }
+    // Apply specific implementations for 1 and 2 target qubits
+    if (num_targets == 1){
+        const double u00_real = U[0][0].real(), u01_real = U[0][1].real(), u10_real = U[1][0].real(), u11_real = U[1][1].real(); 
+        const double u00_imag = U[0][0].imag(), u01_imag = U[0][1].imag(), u10_imag = U[1][0].imag(), u11_imag = U[1][1].imag();
+        for_each_pair(state, dim, std::size_t{1} << target_qubits[0], thread_count, [=](complex128* __restrict__ s, const std::size_t i, const std::size_t j){
+            const double a = s[i].real(), b = s[i].imag(), c = s[j].real(), d = s[j].imag();
+            s[i] = complex128(u00_real * a - u00_imag * b + u01_real * c - u01_imag * d, u00_real * b + u00_imag * a + u01_real * d + u01_imag * c);
+            s[j] = complex128(u10_real * a - u10_imag * b + u11_real * c - u11_imag * d, u10_real * b + u10_imag * a + u11_real * d + u11_imag * c);
+        });
+    }
+    else if (num_targets == 2){
+        double U_re[4][4], U_im[4][4];
+        for (int r = 0; r < 4; ++r){
+            for (int c = 0; c < 4; ++c){
+                U_re[r][c] = U[r][c].real();
+                U_im[r][c] = U[r][c].imag();
             }
         }
-
+        const std::size_t s0 = std::size_t{1} << target_qubits[0];
+        const std::size_t s1 = std::size_t{1} << target_qubits[1];
+        for_each_quad(state, dim, s0, s1, thread_count, [=](complex128* __restrict__ s, const std::size_t i){
+            const std::size_t idx[4] = {i, i + s0, i + s1, i + s0 + s1};
+            double v_re[4], v_im[4];
+            for (int c = 0; c < 4; ++c){
+                v_re[c] = s[idx[c]].real();
+                v_im[c] = s[idx[c]].imag();
+            }
+            for (int r = 0; r < 4; ++r){
+                double sum_real = 0.0, sum_imag = 0.0;
+                for (int c = 0; c < 4; ++c){
+                    sum_real += U_re[r][c] * v_re[c] - U_im[r][c] * v_im[c];
+                    sum_imag += U_re[r][c] * v_im[c] + U_im[r][c] * v_re[c];
+                }
+                s[idx[r]] = complex128(sum_real, sum_imag);
+            }
+        });
     }
+
+    // Apply templated application of unitaries for 3 and 4 target qubits
+    else if (num_targets == 3){
+        apply_dense_unitary_fixed<3>(state, dim, U, target_qubits, thread_count);
+    }
+    else if (num_targets == 4){
+        apply_dense_unitary_fixed<4>(state, dim, U, target_qubits, thread_count);
+    }
+
+    // Use the generic unitary application function for all other number of target qubits
     else {
-        for (std::size_t outer = 0; outer < outer_dim; ++outer){
-            std::size_t base_idx = 0;
-            std::size_t src_idx = outer;
-            for (std::size_t bit = 0; bit < num_qubits; ++bit){
-                if (is_target[bit]){
-                    continue;
-                }
-                if (src_idx & 1ULL){
-                    base_idx |= (std::size_t{1} << bit);
-                }
-                src_idx >>= 1;
-            }
-
-            std::vector<complex128> temp(inner_dim);
-            std::vector<complex128> new_local(inner_dim);
-
-            #pragma omp parallel num_threads(thread_count)
-            {
-                #pragma omp for schedule(static)
-                for (std::size_t i = 0; i < inner_dim; ++i){
-                    temp[i] = state[base_idx | target_offsets[i]];
-                }
-                
-                #pragma omp for schedule(static)
-                for (std::size_t r = 0; r < inner_dim; ++r){
-                    complex128 sum(0.0, 0.0);
-                    const auto& row = U[r];
-                    for (std::size_t c = 0; c < inner_dim; ++c){
-                        sum += row[c] * temp[c];
-                    }
-                    new_local[r] = sum;
-                }
-                #pragma omp for schedule(static)
-                for (std::size_t i = 0; i < inner_dim; ++i){
-                    state[base_idx | target_offsets[i]] = new_local[i];
-                }
-            }
-        }
+        apply_dense_unitary_generic(state, dim, U, target_qubits, thread_count);
     }
 }

@@ -121,20 +121,18 @@ static inline noise_map2q parse_two_qubit_noise(const py::dict& noise_dictionary
  *          Qubit Index 2
  * 
  * Returns:
- *      std::vector<matrix> 
- *          A vector of Kraus operators (complex valued matrices) that represent the noise instructions for the applied gate on a qubit or pair of qubits.
+ *      const std::vector<matrix>& 
+ *          A reference to the vector of Kraus operators (complex valued matrices) that represent the noise instructions for the applied gate on a qubit or pair of qubits.
  * 
  * Notes:
  *      Two qubit indices are queried for the inputs to maintain consistent flow with single qubit gates having q1 and q2 with the same value.
  */
-std::vector<matrix> get_matrix_list_for_instruction(const std::string& gate_name, const std::vector<noise_map>& single_qubit_instructions, const noise_map2q& two_qubit_instructions, const std::size_t q1, const std::size_t q2){
+const std::vector<matrix>& get_matrix_list_for_instruction(const std::string& gate_name, const std::vector<noise_map>& single_qubit_instructions, const noise_map2q& two_qubit_instructions, const std::size_t q1, const std::size_t q2){
     if (q1 == q2){
-        std::vector<matrix> noise_matrix_list = single_qubit_instructions[q1].at(gate_name);
-        return noise_matrix_list;
+        return single_qubit_instructions[q1].at(gate_name);
     }
     else {
         std::pair<int, int> key = {q1, q2};
-        std::vector<matrix> noise_matrix_list = two_qubit_instructions.at(gate_name).at(key);
-        return noise_matrix_list;
+        return two_qubit_instructions.at(gate_name).at(key);
     }
 }
