@@ -1,5 +1,4 @@
 #pragma once
-#include <stdexcept>
 #include "Communicator.hpp"
 #include "TypeDefs.hpp"
 #include "NoiseParser.hpp"

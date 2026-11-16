@@ -9,7 +9,7 @@
  */
 
 #include "TypeDefs.hpp"
-#include <stdexcept>
+
 
 /**
  * Function that retrieves the single qubit measurement error matrices from a python dictionary.

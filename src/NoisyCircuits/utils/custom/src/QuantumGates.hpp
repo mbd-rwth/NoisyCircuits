@@ -11,8 +11,6 @@
 
 #pragma once
 #include "TypeDefs.hpp"
-#include <algorithm>
-#include <cmath>
 
 // Set the minimum number of amplitude pairs before allowing parallel execution.
 constexpr std::size_t MIN_PARALLEL_GROUPS = std::size_t{1} << 14;

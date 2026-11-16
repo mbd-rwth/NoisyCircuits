@@ -19,6 +19,10 @@
 #include <random>
 #include <string>
 #include <omp.h>
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+#include <cstring>
 
 namespace py = pybind11;
 

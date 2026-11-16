@@ -13,10 +13,9 @@
 #include "QuantumGates.hpp"
 #include "NoiseApplication.hpp"
 #include "FunctionMapper.hpp"
-#include <stdexcept>
+#include "CacheBlocker.hpp"
 
 
-using GateFunction = void(*)(complex128* __restrict__, const std::size_t, const std::size_t, const std::size_t, const double, const matrix&, const std::vector<std::size_t>&, cuint);
 using NoiseFunction = void(*)(complex128* __restrict__, const std::size_t, const std::size_t, const std::size_t, const std::vector<matrix>&, std::mt19937_64&, cuint);
 
 /**
@@ -45,21 +44,6 @@ static std::vector<GateFunction> resolve_gate_functions(const std::vector<ItemEn
 }
 
 /**
- * Function that returns the second qubit argument passed to the gate and noise functions
- * 
- * Inputs:
- *      qubits : const std::vector<std::size_t>&
- *          Qubits of the instructons
- * 
- * Returns:
- *      std::size_t
- *          qubits[1] if the instruction has more than 1 qubit, otherwise qubits[0]
- */
-static inline std::size_t second_qubit(const std::vector<std::size_t>& qubits){
-    return qubits.size() > 1 ? qubits[1] : qubits[0];
-}
-
-/**
  * Function that inplace evolves the state of a quantum circuit using the pure statevector simulation
  * 
  * Inputs:
@@ -80,10 +64,16 @@ static inline std::size_t second_qubit(const std::vector<std::size_t>& qubits){
 void pure_state_solver(const std::vector<ItemEntry>& instruction_list, const std::size_t num_qubits, complex128* __restrict__ state, bool return_state, cuint thread_count){
     const std::vector<GateFunction> gate_functions = resolve_gate_functions(instruction_list);
     state[0] = complex128(1.0, 0.0);
-    for (std::size_t g = 0; g < instruction_list.size(); ++g){
-        const ItemEntry& instruction = instruction_list[g];
-        const std::vector<std::size_t>& qubits = instruction.qubits;
-        gate_functions[g](state, qubits[0], second_qubit(qubits), num_qubits, instruction.params, instruction.unitary_matrix, qubits, thread_count);
+    const std::size_t block_qubits = choose_block_qubits(num_qubits, thread_count);
+    if (block_qubits > 0){
+        apply_gates_blocked(instruction_list, gate_functions, num_qubits, state, block_qubits, thread_count);
+    }
+    else{
+        for (std::size_t g = 0; g < instruction_list.size(); ++g){
+            const ItemEntry& instruction = instruction_list[g];
+            const std::vector<std::size_t>& qubits = instruction.qubits;
+            gate_functions[g](state, qubits[0], second_qubit(qubits), num_qubits, instruction.params, instruction.unitary_matrix, qubits, thread_count);
+        }
     }
     if (!return_state){
         const std::size_t dim = std::size_t{1} << num_qubits;
@@ -179,7 +169,7 @@ void monte_carlo_wavefunction_solver(const std::vector<ItemEntry>& instruction_l
     }
     double averaging_factor = 1.0 / static_cast<double>(num_trajectories);
     #pragma omp parallel for schedule(dynamic) num_threads(thread_count)
-    for (unsigned short t = 0; t < num_trajectories; ++t){
+    for (unsigned int t = 0; t < num_trajectories; ++t){
         cuint seed = static_cast<cuint>(42 + t);
         std::vector<complex128> trajectory_state = single_trajectory(instruction_list, gate_functions, noise_functions, noise_operators, num_qubits, seed);
         #pragma omp critical

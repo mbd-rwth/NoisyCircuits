@@ -1,6 +1,4 @@
 #include "Communicator.hpp"
-#include <cstring>
-#include <stdexcept>
 
 
 namespace {
