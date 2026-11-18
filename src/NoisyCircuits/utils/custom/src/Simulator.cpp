@@ -16,7 +16,13 @@
 #include "CacheBlocker.hpp"
 
 
-using NoiseFunction = void(*)(complex128* __restrict__, const std::size_t, const std::size_t, const std::size_t, const std::vector<matrix>&, std::mt19937_64&, cuint);
+/**
+ * Struct to store noise instructions for an instruction
+ */
+struct NoiseInstruction{
+    const KrausChannel* channel = nullptr;
+    std::array<complex128, 16> gate{}; 
+};
 
 /**
  * Function to look up the gate function of each instruction once, before execution
@@ -86,6 +92,35 @@ void pure_state_solver(const std::vector<ItemEntry>& instruction_list, const std
 }
 
 /**
+ * Functio that computes the matrix for a gate on the target qubit(s) by applying the gate function to basis states
+ * 
+ * Inputs:
+ *      gate_function : const GateFunction
+ *          Function to apply the gate
+ *      instruction : const ItemEntry&
+ *          Reference to the instruction
+ *      num_targets : const std::size_t
+ *          Number of target qubits
+ *      U : complex128*
+ *          Pointer to the gate unitary
+ * 
+ * Returns:
+ *      None
+ */
+static void get_gate_matrix(const GateFunction gate_function, const ItemEntry& instruction, const std::size_t num_targets, complex128* __restrict__ U){
+    const std::size_t dim = std::size_t{1} << num_targets;
+    complex128 column_vector[4];
+    for (std::size_t c = 0; c < dim; ++c){
+        std::fill(column_vector, column_vector + dim, complex128(0.0, 0.0));
+        column_vector[c] = complex128(1.0, 0.0);
+        gate_function(column_vector, 0, num_targets - 1, num_targets, instruction.params, instruction.unitary_matrix, instruction.qubits, 1);
+        for (std::size_t r = 0; r < dim; ++r){
+            U[r * dim + c] = column_vector[r];
+        }
+    }
+}
+
+/**
  * Function that computes the fully evolved statevector for a single trajectory of the Monte-Carlo Wavefunction method
  * 
  * Inputs:
@@ -93,10 +128,8 @@ void pure_state_solver(const std::vector<ItemEntry>& instruction_list, const std
  *          Reference to the instructions to build and execute the quantum circuit
  *      gate_functions : const std::vector<GateFunction>&
  *          Function that applies the gate of each instruction
- *      noise_functions : const std::vector<NoiseFunction>&
- *          Function that applies the noise associated to each instruction
- *      noise_operators : const std::vector<const std::vector<matrix>*>&
- *          Pointer to the Kraus operators of each instructions
+ *      noise_instructions : const std::vector<NoiseInstruction>&
+ *          Reference to the kraus channel and gate matrix
  *      num_qubits : const std::size_t
  *          Total number of qubits in the system
  *      seed : const unsigned int
@@ -106,7 +139,7 @@ void pure_state_solver(const std::vector<ItemEntry>& instruction_list, const std
  *      std::vector<complex128>
  *          Probabilities of the statevector from the trajectory evolution
  */
-std::vector<complex128> single_trajectory(const std::vector<ItemEntry>& instruction_list, const std::vector<GateFunction>& gate_functions, const std::vector<NoiseFunction>& noise_functions, const std::vector<const std::vector<matrix>*>& noise_operators, const std::size_t num_qubits, cuint seed){
+std::vector<complex128> single_trajectory(const std::vector<ItemEntry>& instruction_list, const std::vector<GateFunction>& gate_functions, const std::vector<NoiseInstruction>& noise_instructions, const std::size_t num_qubits, cuint seed){
     std::mt19937_64 trajectory_engine(seed);
     std::vector<complex128> trajectory_state(std::size_t{1} << num_qubits, 0.0);
     trajectory_state[0] = complex128(1.0, 0.0);
@@ -114,14 +147,14 @@ std::vector<complex128> single_trajectory(const std::vector<ItemEntry>& instruct
         const ItemEntry& instruction = instruction_list[g];
         const std::vector<std::size_t>& qubits = instruction.qubits;
         const std::size_t q2 = second_qubit(qubits);
-        gate_functions[g](trajectory_state.data(), qubits[0], q2, num_qubits, instruction.params, instruction.unitary_matrix, qubits, 1);
-        noise_functions[g](trajectory_state.data(), qubits[0], q2, num_qubits, *noise_operators[g], trajectory_engine, 1);
+        const KrausChannel& channel = *noise_instructions[g].channel;
+        if (channel.num_targets > 0){
+            apply_noise_gate(trajectory_state.data(), qubits[0], q2, num_qubits, noise_instructions[g].gate.data(), channel, trajectory_engine);
+        }
+        else {
+            gate_functions[g](trajectory_state.data(), qubits[0], q2, num_qubits, instruction.params, instruction.unitary_matrix, qubits, 1);
+        }
     }
-    for (std::size_t i = 0; i < (std::size_t{1} << num_qubits); i++){
-        const complex128 amp = trajectory_state[i];
-        trajectory_state[i] = complex128(amp.real() * amp.real() + amp.imag() * amp.imag(), 0.0);
-    }
-    return trajectory_state;
 }
 
 /**
@@ -148,30 +181,37 @@ std::vector<complex128> single_trajectory(const std::vector<ItemEntry>& instruct
  */
 void monte_carlo_wavefunction_solver(const std::vector<ItemEntry>& instruction_list, complex128* __restrict__ state, const std::vector<noise_map>& single_qubit_instructions, const noise_map2q& two_qubit_instructions, const std::size_t num_qubits, cuint num_trajectories, cuint thread_count){
     const std::vector<GateFunction> gate_functions = resolve_gate_functions(instruction_list);
-    const auto noise_function_map = noise_function_mapper();
-    std::vector<NoiseFunction> noise_functions;
-    std::vector<const std::vector<matrix>*> noise_operators;
-    static const std::vector<matrix> no_noise_operators;
-    noise_functions.reserve(instruction_list.size());
-    noise_operators.reserve(instruction_list.size());
-    for (const ItemEntry& instruction : instruction_list){
-        const auto noise = noise_function_map.find(instruction.gate_name);
-        if (noise == noise_function_map.end()){
-            throw std::invalid_argument("No noise function for gate: " + instruction.gate_name);
-        }
-        noise_functions.push_back(noise->second);
+    std::unordered_map<const std::vector<matrix>*, std::size_t> channel_index;
+    std::vector<std::size_t> instruction_channel(instruction_list.size(), 0);
+    std::vector<KrausChannel> channels(1);
+    for (std::size_t g = 0; g < instruction_list.size(); ++g){
+        const ItemEntry& instruction = instruction_list[g];
         if (instruction.gate_name == "unitary"){
-            noise_operators.push_back(&no_noise_operators);
+            continue;
         }
-        else{
-            noise_operators.push_back(&get_matrix_list_for_instruction(instruction.gate_name, single_qubit_instructions, two_qubit_instructions, instruction.qubits[0], instruction.qubits[1]));
+        const std::vector<matrix>* operators = &get_matrix_list_for_instruction(instruction.gate_name, single_qubit_instructions, two_qubit_instructions, instruction.qubits[0], second_qubit(instruction.qubits));
+        const auto found_index_in_channel = channel_index.find(operators);
+        if (found_index_in_channel != channel_index.end()){
+            instruction_channel[g] = found_index_in_channel -> second;
+        }
+        else {
+            channel_index.emplace(operators, channels.size());
+            instruction_channel[g] = channels.size();
+            channels.push_back(build_channel(*operators));
+        }
+    }
+    std::vector<NoiseInstruction> noise_instructions(instruction_list.size());
+    for (std::size_t g = 0; g < instruction_list.size(); ++g){
+        noise_instructions[g].channel = &channels[instruction_channel[g]];
+        if (noise_instructions[g].channel -> num_targets > 0){
+            get_gate_matrix(gate_functions[g], instruction_list[g], noise_instructions[g].channel->num_targets, noise_instructions[g].gate.data());
         }
     }
     double averaging_factor = 1.0 / static_cast<double>(num_trajectories);
     #pragma omp parallel for schedule(dynamic) num_threads(thread_count)
     for (unsigned int t = 0; t < num_trajectories; ++t){
         cuint seed = static_cast<cuint>(42 + t);
-        std::vector<complex128> trajectory_state = single_trajectory(instruction_list, gate_functions, noise_functions, noise_operators, num_qubits, seed);
+        std::vector<complex128> trajectory_state = single_trajectory(instruction_list, gate_functions, noise_instructions, num_qubits, seed);
         #pragma omp critical
         {
             for (std::size_t i = 0; i < (std::size_t{1} << num_qubits); i++){

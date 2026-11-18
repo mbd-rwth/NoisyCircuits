@@ -23,6 +23,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <cstring>
+#include <array>
 
 namespace py = pybind11;
 
