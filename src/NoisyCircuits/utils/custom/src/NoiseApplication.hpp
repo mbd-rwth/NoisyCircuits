@@ -58,7 +58,7 @@ static inline KrausChannel build_channel(const std::vector<matrix>& noise_operat
                 kraus[r * d + c] = K[r][c];
                 complex128 sum = 0.0;
                 for (std::size_t m = 0; m < d; ++m){
-                    sum += std::conj(K[m][r]) * K[m][r];
+                    sum += std::conj(K[m][r]) * K[m][c];
                 }
                 kdagk[r * d + c] = sum;
             }
@@ -214,7 +214,7 @@ static inline void get_reduced_density_matrix_two_qubit(const complex128* __rest
     double r01_r = 0.0, r01_i = 0.0, r02_r = 0.0, r02_i = 0.0, r03_r = 0.0, r03_i = 0.0;
     double r12_r = 0.0, r12_i = 0.0, r13_r = 0.0, r13_i = 0.0, r23_r = 0.0, r23_i = 0.0;
     for (std::size_t out = 0; out < dim; out += (h << 1)){
-        for (std::size_t mid = 0; mid < out + h; mid += (l << 1)){
+        for (std::size_t mid = out; mid < out + h; mid += (l << 1)){
             #pragma omp simd reduction(+:d0, d1, d2, d3, r01_r, r01_i, r02_r, r02_i, r03_r, r03_i, r12_r, r12_i, r13_r, r13_i, r23_r, r23_i)
             for (std::size_t i = mid; i < mid + l; ++i){
                 const double x0 = state[i].real(), y0 = state[i].imag();

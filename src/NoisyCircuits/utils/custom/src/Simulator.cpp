@@ -155,6 +155,11 @@ std::vector<complex128> single_trajectory(const std::vector<ItemEntry>& instruct
             gate_functions[g](trajectory_state.data(), qubits[0], q2, num_qubits, instruction.params, instruction.unitary_matrix, qubits, 1);
         }
     }
+    for (std::size_t i = 0; i < trajectory_state.size(); ++i){
+        const complex128 amp = trajectory_state[i];
+        trajectory_state[i] = complex128(amp.real() * amp.real() + amp.imag() * amp.imag());
+    }
+    return trajectory_state;
 }
 
 /**
