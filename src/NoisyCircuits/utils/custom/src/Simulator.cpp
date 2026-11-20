@@ -14,6 +14,7 @@
 #include "NoiseApplication.hpp"
 #include "FunctionMapper.hpp"
 #include "CacheBlocker.hpp"
+#include "GroupTrajectories.hpp"
 
 
 /**
@@ -212,18 +213,20 @@ void monte_carlo_wavefunction_solver(const std::vector<ItemEntry>& instruction_l
             get_gate_matrix(gate_functions[g], instruction_list[g], noise_instructions[g].channel->num_targets, noise_instructions[g].gate.data());
         }
     }
-    double averaging_factor = 1.0 / static_cast<double>(num_trajectories);
-    #pragma omp parallel for schedule(dynamic) num_threads(thread_count)
-    for (unsigned int t = 0; t < num_trajectories; ++t){
-        cuint seed = static_cast<cuint>(42 + t);
-        std::vector<complex128> trajectory_state = single_trajectory(instruction_list, gate_functions, noise_instructions, num_qubits, seed);
-        #pragma omp critical
-        {
-            for (std::size_t i = 0; i < (std::size_t{1} << num_qubits); i++){
-                state[i] += trajectory_state[i] * averaging_factor;
-            }
-        }
-    }
+    // double averaging_factor = 1.0 / static_cast<double>(num_trajectories);
+    // #pragma omp parallel for schedule(dynamic) num_threads(thread_count)
+    // for (unsigned int t = 0; t < num_trajectories; ++t){
+    //     cuint seed = static_cast<cuint>(42 + t);
+    //     std::vector<complex128> trajectory_state = single_trajectory(instruction_list, gate_functions, noise_instructions, num_qubits, seed);
+    //     #pragma omp critical
+    //     {
+    //         for (std::size_t i = 0; i < (std::size_t{1} << num_qubits); i++){
+    //             state[i] += trajectory_state[i] * averaging_factor;
+    //         }
+    //     }
+    // }
+    const unsigned group_size  = auto_group_size(num_qubits, thread_count);
+    monte_carlo_wavefunction_grouped(instruction_list, gate_functions, noise_instructions, state, num_qubits, num_trajectories, thread_count, group_size);
 }
 
 /**
